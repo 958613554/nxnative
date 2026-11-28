@@ -38,7 +38,7 @@ static int rt_view_into(int nvn_format, MTLPixelFormat want_base, uint64_t seria
     failed += before != serial_get(e.serial);
     uint64_t upgrades = g_pfv_upgrades;
     mtl_sub_begin();
-    attach(rp.colorAttachments[0], &e, &v, 1);
+    attach(rp.colorAttachments[0], &e, &v, 1, 1);
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     id<MTLTexture> base = serial_get(e.serial), att = rp.colorAttachments[0].texture;
     failed += g_pfv_upgrades - upgrades != (uint64_t)!made_with_pfv;   // upgraded only when made without the usage
@@ -97,7 +97,8 @@ static int rt_view_slots_share(void) {
     mtl_sub_begin();
     rt_view_upgrade_all(0);
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
-    attach(pd.colorAttachments[0], &a, NULL, 0); attach(pd.colorAttachments[1], &b, &v, 1);
+    attach(pd.colorAttachments[0], &a, NULL, 0, 1);
+    attach(pd.colorAttachments[1], &b, &v, 1, 1);
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     id<MTLTexture> nw = serial_get(a.serial);
     failed += nw == old || serial_get(b.serial) != nw;            // both serials moved to the upgraded texture
@@ -118,12 +119,12 @@ static int rt_view_refusals(void) {
     MTLRenderPassDescriptor *pd = [MTLRenderPassDescriptor renderPassDescriptor];
     mtl_sub_begin();
     rtv_note_bad_pair(MTLPixelFormatRG16Float, MTLPixelFormatR32Uint);
-    attach(pd.colorAttachments[0], &a, &v, 1);
+    attach(pd.colorAttachments[0], &a, &v, 1, 1);
     failed += pd.colorAttachments[0].texture.pixelFormat != MTLPixelFormatRG16Float;
     failed += rt_view_fmt_predict(&a, serial_get(a.serial), &v, 1) != MTLPixelFormatRG16Float;
     g_rtv_bad_npf = 0;
     g_rtv_bad_ser[g_rtv_bad_nser++ % RTV_BAD_N] = b.serial;
-    attach(pd.colorAttachments[1], &b, &v, 1);
+    attach(pd.colorAttachments[1], &b, &v, 1, 1);
     failed += pd.colorAttachments[1].texture.pixelFormat != MTLPixelFormatRG16Float;
     failed += g_pfv_upgrades != upgrades;
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
@@ -143,7 +144,7 @@ static int rt_view_class_change(void) {
     view_t v = {0}; v.set_format = 1; v.format = NVN_FORMAT_R32UI;
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     mtl_sub_begin();
-    attach(rp.colorAttachments[0], &h, &v, 1);
+    attach(rp.colorAttachments[0], &h, &v, 1, 1);
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     failed += rp.colorAttachments[0].texture.pixelFormat != MTLPixelFormatRGBA16Float || (((id<MTLTexture>)serial_get(h.serial)).usage & MTLTextureUsagePixelFormatView);
     failed += rt_view_fmt_predict(&h, serial_get(h.serial), &v, 1) != MTLPixelFormatRGBA16Float;   // the prediction keeps the base format where no upgrade happens
