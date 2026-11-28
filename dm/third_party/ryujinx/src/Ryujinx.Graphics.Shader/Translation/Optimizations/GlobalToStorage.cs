@@ -87,6 +87,9 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             // nxnative: whether the shader contains any global memory store or atomic (needs gmem_idx in the shared raw cache for gmem_log)
             public readonly bool HasGlobalWrite;
 
+            // nxnative: enable 2-entry private register cache when the shader has >= 2 distinct raw global lookup sites
+            public bool TwoEntryRawCache;
+
             public GtsContext(HelperFunctionManager hfm, bool ampere, bool rawOnly, bool hasGlobalWrite)
             {
                 _entries = [];
@@ -349,6 +352,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
 
             BuildRawCoalesceGroups(gtsContext, blocks);
+            gtsContext.TwoEntryRawCache = CountRawLookupSites(gtsContext, blocks) >= 2;
 
             foreach (BasicBlock block in blocks)
             {
@@ -1136,14 +1140,15 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
 
             int[] cache = resourceManager.GetRawCacheMemory(gtsContext.HasGlobalWrite);
+            int[] cache2 = gtsContext.TwoEntryRawCache ? resourceManager.GetRawCacheMemory2(gtsContext.HasGlobalWrite) : null;
             Operand baseLo = context.Load(StorageKind.LocalMemory, cache[0]);
             Operand baseHi = context.Load(StorageKind.LocalMemory, cache[1]);
             Operand span = context.Load(StorageKind.LocalMemory, cache[2]);
 
             // Shared register-cached pool range check across all raw helpers in this invocation: no pool-table loads on a hit.
             // Keep dmsh_raw_find pure (no LocalMemory references) so Metal/LLVM promotes the cached words to pure SSA registers.
-            // The host supplies a 32-bit span only when the range stays within one 4 GiB window; a zero span (initial state or a
-            // 4 GiB-straddling entry) always takes dmsh_raw_find, which checks the exact 64-bit end and returns 0 on a miss.
+            // When the shader has >= 2 raw lookup sites, a second cache slot (cache2) avoids thrashing on alternating 2-buffer loops
+            // with zero register swaps on Slot B hits and FIFO shift (A -> B) only on cold misses.
             Operand offset = context.ISubtract(addrLow, baseLo);
             Operand cacheHit = context.BitwiseAnd(
                 context.ICompareEqual(addrHigh, baseHi),
@@ -1151,27 +1156,65 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
             Operand lblChosen = Label();
             Operand lblSkip = Label();
+            Operand deltaLo = Local();
+            Operand deltaHi = Local();
             Operand selected = writes ? Local() : null;
+            context.Copy(deltaLo, context.Load(StorageKind.LocalMemory, cache[3]));
+            context.Copy(deltaHi, context.Load(StorageKind.LocalMemory, cache[4]));
             if (writes)
             {
                 context.Copy(selected, context.Load(StorageKind.LocalMemory, cache[5]));
             }
             context.BranchIfTrue(lblChosen, cacheHit);
 
+            if (cache2 != null)
+            {
+                Operand baseLo2 = context.Load(StorageKind.LocalMemory, cache2[0]);
+                Operand baseHi2 = context.Load(StorageKind.LocalMemory, cache2[1]);
+                Operand span2 = context.Load(StorageKind.LocalMemory, cache2[2]);
+                Operand offset2 = context.ISubtract(addrLow, baseLo2);
+                Operand cacheHit2 = context.BitwiseAnd(
+                    context.ICompareEqual(addrHigh, baseHi2),
+                    context.ICompareLessUnsigned(offset2, span2));
+                context.Copy(deltaLo, context.Load(StorageKind.LocalMemory, cache2[3]));
+                context.Copy(deltaHi, context.Load(StorageKind.LocalMemory, cache2[4]));
+                if (writes)
+                {
+                    context.Copy(selected, context.Load(StorageKind.LocalMemory, cache2[5]));
+                }
+                context.BranchIfTrue(lblChosen, cacheHit2);
+            }
+
             // Miss: one pure function per shader (dmsh_raw_find, noinline outside mesh stages) searches the pool table, checks the
-            // exact 64-bit end, and returns the entry index (>= 1) or 0 on a miss (leaving the cached registers undisturbed).
+            // exact 64-bit bounds, and returns the entry index (>= 1) or 0 on a miss (leaving the cached registers undisturbed).
             Operand foundIdx = context.Call(GetRawFindFunction(gtsContext, mapBinding), true, addrLow, addrHigh);
             context.BranchIfFalse(lblSkip, context.ICompareNotEqual(foundIdx, Const(0)));
             Operand found = context.IMultiply(foundIdx, Const(GmemMapEntryWords));
+            if (cache2 != null)
+            {
+                context.Store(StorageKind.LocalMemory, cache2[0], baseLo);
+                context.Store(StorageKind.LocalMemory, cache2[1], baseHi);
+                context.Store(StorageKind.LocalMemory, cache2[2], span);
+                context.Store(StorageKind.LocalMemory, cache2[3], context.Load(StorageKind.LocalMemory, cache[3]));
+                context.Store(StorageKind.LocalMemory, cache2[4], context.Load(StorageKind.LocalMemory, cache[4]));
+                if (gtsContext.HasGlobalWrite)
+                {
+                    context.Store(StorageKind.LocalMemory, cache2[5], context.Load(StorageKind.LocalMemory, cache[5]));
+                }
+            }
+            Operand foundDlo = MapWord(found, 4);
+            Operand foundDhi = MapWord(found, 5);
             context.Store(StorageKind.LocalMemory, cache[0], MapWord(found, 0));
             context.Store(StorageKind.LocalMemory, cache[1], MapWord(found, 1));
             context.Store(StorageKind.LocalMemory, cache[2], MapWord(found, 7));
-            context.Store(StorageKind.LocalMemory, cache[3], MapWord(found, 4));
-            context.Store(StorageKind.LocalMemory, cache[4], MapWord(found, 5));
+            context.Store(StorageKind.LocalMemory, cache[3], foundDlo);
+            context.Store(StorageKind.LocalMemory, cache[4], foundDhi);
             if (gtsContext.HasGlobalWrite)
             {
                 context.Store(StorageKind.LocalMemory, cache[5], foundIdx);
             }
+            context.Copy(deltaLo, foundDlo);
+            context.Copy(deltaHi, foundDhi);
             if (writes)
             {
                 context.Copy(selected, foundIdx);
@@ -1192,9 +1235,9 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
             // A small integer is read or written in its 32-bit word
             Operand wordLow = isSmall ? context.BitwiseAnd(addrLow, Const(~3)) : addrLow;
-            Operand hostLow = context.IAdd(wordLow, context.Load(StorageKind.LocalMemory, cache[3]));
+            Operand hostLow = context.IAdd(wordLow, deltaLo);
             Operand carry = context.ConditionalSelect(context.ICompareLessUnsigned(hostLow, wordLow), Const(1), Const(0));
-            Operand hostHigh = context.IAdd(context.IAdd(addrHigh, context.Load(StorageKind.LocalMemory, cache[4])), carry);
+            Operand hostHigh = context.IAdd(context.IAdd(addrHigh, deltaHi), carry);
 
             Operand resultValue = null;
 
@@ -1351,12 +1394,18 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             context.MarkLabel(lblCheck);
 
             Operand found = context.IMultiply(selected, Const(GmemMapEntryWords));
+            // Check both start and end (same 32-byte entry cache line) so single-entry < 2 MiB chunk hints reject unmapped gaps before start too.
+            Operand entryStartLow = MapWord(found, 0);
+            Operand entryStartHigh = MapWord(found, 1);
             Operand endHigh = MapWord(found, 3);
             Operand endLow = MapWord(found, 2);
+            Operand atOrAboveStart = context.BitwiseOr(
+                context.ICompareGreaterUnsigned(addrHigh, entryStartHigh),
+                context.BitwiseAnd(context.ICompareEqual(addrHigh, entryStartHigh), context.ICompareGreaterOrEqualUnsigned(addrLow, entryStartLow)));
             Operand belowEnd = context.BitwiseOr(
                 context.ICompareLessUnsigned(addrHigh, endHigh),
                 context.BitwiseAnd(context.ICompareEqual(addrHigh, endHigh), context.ICompareLessUnsigned(addrLow, endLow)));
-            context.Return(context.ConditionalSelect(belowEnd, selected, Const(0)));
+            context.Return(context.ConditionalSelect(context.BitwiseAnd(atOrAboveStart, belowEnd), selected, Const(0)));
 
             Function function = new(ControlFlowGraph.Create(context.GetOperations()).Blocks, "dmsh_raw_find", true, 2, 0);
 
@@ -1952,6 +2001,56 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
         }
 
+        // Count distinct raw global lookup sites (coalesced groups + uncoalesced raw ops) to enable the 2-entry cache only when needed.
+        private static int CountRawLookupSites(GtsContext gtsContext, BasicBlock[] blocks)
+        {
+            HashSet<RawCoalesceGroup> groups = [];
+            foreach (RawCoalesceMember m in gtsContext.RawCoalesced.Values)
+            {
+                groups.Add(m.Group);
+            }
+            int sites = groups.Count;
+            if (sites >= 2)
+            {
+                return sites;
+            }
+
+            foreach (BasicBlock block in blocks)
+            {
+                HashSet<int> vecHeads = [];
+                for (LinkedListNode<INode> node = block.Operations.First; node != null; node = node.Next)
+                {
+                    if (node.Value is not Operation op || !IsGlobalMemory(op.StorageKind))
+                    {
+                        continue;
+                    }
+                    if (gtsContext.RawCoalesced.ContainsKey(op))
+                    {
+                        continue;
+                    }
+                    if (op.Inst == Instruction.Load && op.StorageKind == StorageKind.GlobalMemory && op.GlobalVectorCount > 1)
+                    {
+                        if (op.GlobalVectorWord == 0)
+                        {
+                            vecHeads.Add(op.GlobalVectorGroup);
+                        }
+                        else if (vecHeads.Contains(op.GlobalVectorGroup))
+                        {
+                            continue;
+                        }
+                    }
+                    if (!FindUniqueBaseAddressCb(gtsContext, block, op.GetSource(0), needsOffset: false).Found)
+                    {
+                        if (++sites >= 2)
+                        {
+                            return sites;
+                        }
+                    }
+                }
+            }
+            return sites;
+        }
+
         // Resolve (startLo, startHi, maxNeed) once for a <= 4 KiB window of coalesced raw loads.
         // Fast path (cache hit with rem >= maxNeed): zero gmem_map loads, zero dmsh_raw_find calls.
         // Straddle path (rem < maxNeed): at most one 4 KiB page boundary lies inside [start, start + maxNeed), so one extra dmsh_raw_find
@@ -1974,6 +2073,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
 
             int[] cache = resourceManager.GetRawCacheMemory(gtsContext.HasGlobalWrite);
+            int[] cache2 = gtsContext.TwoEntryRawCache ? resourceManager.GetRawCacheMemory2(gtsContext.HasGlobalWrite) : null;
             int[] baseMem = resourceManager.GetRawBaseMemory();
 
             Operand baseLo = context.Load(StorageKind.LocalMemory, cache[0]);
@@ -1986,24 +2086,50 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 context.ICompareLessUnsigned(off, span));
 
             Operand r0Local = Local();
+            Operand hitRemLocal = Local();
+            Operand hitDloLocal = Local();
+            Operand hitDhiLocal = Local();
+            Operand lblHit = Label();
             Operand lblMiss = Label();
             Operand lblStraddle = Label();
 
-            context.BranchIfFalse(lblMiss, cacheHit);
+            context.Copy(hitRemLocal, context.ISubtract(span, off));
+            context.Copy(hitDloLocal, context.Load(StorageKind.LocalMemory, cache[3]));
+            context.Copy(hitDhiLocal, context.Load(StorageKind.LocalMemory, cache[4]));
+            context.BranchIfTrue(lblHit, cacheHit);
 
-            Operand hitRem = context.ISubtract(span, off);
-            Operand hitHostLo = context.IAdd(startLo, context.Load(StorageKind.LocalMemory, cache[3]));
+            if (cache2 != null)
+            {
+                Operand baseLo2 = context.Load(StorageKind.LocalMemory, cache2[0]);
+                Operand baseHi2 = context.Load(StorageKind.LocalMemory, cache2[1]);
+                Operand span2 = context.Load(StorageKind.LocalMemory, cache2[2]);
+                Operand off2 = context.ISubtract(startLo, baseLo2);
+                Operand cacheHit2 = context.BitwiseAnd(
+                    context.ICompareEqual(startHi, baseHi2),
+                    context.ICompareLessUnsigned(off2, span2));
+                context.Copy(hitRemLocal, context.ISubtract(span2, off2));
+                context.Copy(hitDloLocal, context.Load(StorageKind.LocalMemory, cache2[3]));
+                context.Copy(hitDhiLocal, context.Load(StorageKind.LocalMemory, cache2[4]));
+                context.BranchIfFalse(lblMiss, cacheHit2);
+            }
+            else
+            {
+                context.Branch(lblMiss);
+            }
+
+            context.MarkLabel(lblHit);
+            Operand hitHostLo = context.IAdd(startLo, hitDloLocal);
             Operand hitCarry = context.ConditionalSelect(context.ICompareLessUnsigned(hitHostLo, startLo), Const(1), Const(0));
-            Operand hitHostHi = context.IAdd(context.IAdd(startHi, context.Load(StorageKind.LocalMemory, cache[4])), hitCarry);
+            Operand hitHostHi = context.IAdd(context.IAdd(startHi, hitDhiLocal), hitCarry);
             context.Store(StorageKind.LocalMemory, baseMem[0], hitHostLo);
             context.Store(StorageKind.LocalMemory, baseMem[1], hitHostHi);
             context.Store(StorageKind.LocalMemory, baseMem[2], Const(0));
             context.Store(StorageKind.LocalMemory, baseMem[3], Const(0));
             context.Store(StorageKind.LocalMemory, baseMem[4], maxNeed);
             context.Store(StorageKind.LocalMemory, baseMem[5], Const(0));
-            context.Copy(r0Local, hitRem);
-            context.BranchIfTrue(lblStraddle, context.ICompareLessUnsigned(hitRem, maxNeed));
-            context.Return(hitRem);
+            context.Copy(r0Local, hitRemLocal);
+            context.BranchIfTrue(lblStraddle, context.ICompareLessUnsigned(hitRemLocal, maxNeed));
+            context.Return(hitRemLocal);
 
             context.MarkLabel(lblMiss);
 
@@ -2012,6 +2138,18 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             context.BranchIfFalse(lblUnmapped, context.ICompareNotEqual(foundIdx, Const(0)));
 
             Operand found = context.IMultiply(foundIdx, Const(GmemMapEntryWords));
+            if (cache2 != null)
+            {
+                context.Store(StorageKind.LocalMemory, cache2[0], baseLo);
+                context.Store(StorageKind.LocalMemory, cache2[1], baseHi);
+                context.Store(StorageKind.LocalMemory, cache2[2], span);
+                context.Store(StorageKind.LocalMemory, cache2[3], context.Load(StorageKind.LocalMemory, cache[3]));
+                context.Store(StorageKind.LocalMemory, cache2[4], context.Load(StorageKind.LocalMemory, cache[4]));
+                if (gtsContext.HasGlobalWrite)
+                {
+                    context.Store(StorageKind.LocalMemory, cache2[5], context.Load(StorageKind.LocalMemory, cache[5]));
+                }
+            }
             Operand dLo = MapWord(found, 4);
             Operand dHi = MapWord(found, 5);
             context.Store(StorageKind.LocalMemory, cache[0], MapWord(found, 0));

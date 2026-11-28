@@ -189,6 +189,7 @@ namespace Ryujinx.Graphics.Shader.Translation
         // {baseLo, baseHi, span, deltaLo, deltaHi} and, when the shader has any global write/atomic, the entry index for gmem_log.
         // Zero-initialized: span == 0 sends the first access (and any 4 GiB-straddling entry) through dmsh_raw_find.
         private int[] _rawCacheMemoryIds;
+        private int[] _rawCacheMemory2Ids;
 
         public int[] GetRawCacheMemory(bool withIndex)
         {
@@ -204,6 +205,24 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
 
             return _rawCacheMemoryIds;
+        }
+
+        // nxnative: second private register-cache slot for shaders with >= 2 raw global lookup sites (e.g. alternating index + struct buffers in a loop),
+        // preventing 1-entry thrashing without adding register pressure to single-site shaders.
+        public int[] GetRawCacheMemory2(bool withIndex)
+        {
+            if (_rawCacheMemory2Ids == null)
+            {
+                int count = withIndex ? 6 : 5;
+                _rawCacheMemory2Ids = new int[count];
+                string[] names = ["gmem2_lo", "gmem2_hi", "gmem2_span", "gmem2_dlo", "gmem2_dhi", "gmem2_idx"];
+                for (int i = 0; i < count; i++)
+                {
+                    _rawCacheMemory2Ids[i] = Properties.AddLocalMemory(new MemoryDefinition(names[i], AggregateType.U32, 1, zeroInit: true));
+                }
+            }
+
+            return _rawCacheMemory2Ids;
         }
 
         // nxnative: words 1 to 3 of a raw vector load (GlobalToStorage.TryGenerateRawStorageOp), one for the shader: the helper writes them and the loads of those words read them

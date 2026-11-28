@@ -102,6 +102,52 @@ int main(void) { @autoreleasepool {
         uint64_t r[2]; memcpy(r, map + (size_t)entry * DMSH_GMEM_MAP_ENTRY, sizeof r);
         CHECK("the entry holds the whole chunk", r[0] <= chunk << DMSH_GMEM_HINT_SHIFT && r[1] >= (chunk + 1) << DMSH_GMEM_HINT_SHIFT);
     }
+    // Single-entry < 2 MiB sparse pools get a 2 MiB hint, multi-entry chunks stay unhinted, and a 4 GiB-straddling pool splits so every entry has span > 0
+    {
+        size_t pg = (size_t)getpagesize();
+        // Allocate a 6 MiB region aligned to 2 MiB so we can place a lone 64 KiB pool in chunk 0 and two 64 KiB pools in chunk 1
+        uint8_t *reg = mmap(NULL, 8 * MB, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (reg == MAP_FAILED) abort();
+        uintptr_t a2 = ((uintptr_t)reg + (2 * MB - 1)) & ~(uintptr_t)(2 * MB - 1);
+        uint8_t *lone = (uint8_t *)(a2 + 64 * 1024);            // alone in chunk a2 (not 2 MiB-aligned!)
+        uint8_t *sh0 = (uint8_t *)(a2 + 2 * MB);                // two pools sharing chunk a2 + 2 MiB
+        uint8_t *sh1 = (uint8_t *)(a2 + 2 * MB + 256 * 1024);
+        mtl_pool_add(lone, 64 * 1024); mtl_pool_add(sh0, 64 * 1024); mtl_pool_add(sh1, 64 * 1024);
+        mtl_pool_addressed(lone, 64 * 1024); mtl_pool_addressed(sh0, 64 * 1024); mtl_pool_addressed(sh1, 64 * 1024);
+        // Synthetic 4 GiB-straddling pool_ent reusing lone's Metal buffer to test gmem_map's 4 GiB boundary split
+        uint64_t s_lo = 0x3fffff0000ull, s_hi = 0x4000010000ull;   // 64 KiB below 4 GiB + 64 KiB above 4 GiB
+        mtl_pool_addressed((void *)(uintptr_t)s_lo, s_hi - s_lo);
+        int s_idx = -1;
+        pthread_mutex_lock(&g_mu);
+        if (g_npool == g_cap) { g_cap = g_cap ? g_cap * 2 : 64; g_pools = realloc_or_die(g_pools, g_cap * sizeof *g_pools, "test"); }
+        int li = pool_peek((uint64_t)(uintptr_t)lone);
+        g_pools[g_npool] = g_pools[li]; g_pools[g_npool].lo = (uintptr_t)s_lo; g_pools[g_npool].hi = (uintptr_t)s_hi; g_pools[g_npool].base = (uintptr_t)s_lo; g_pools[g_npool].key = (void *)(uintptr_t)s_lo;
+        s_idx = g_npool++; g_pidx_ok = 0; atomic_fetch_add(&g_pool_gen, 1);
+        pthread_mutex_unlock(&g_mu);
+        mtl_sub_begin();
+        const uint8_t *map = (const uint8_t *)gmem_map().contents;
+        uint64_t c_lone = (uint64_t)(uintptr_t)lone >> DMSH_GMEM_HINT_SHIFT;
+        uint32_t h_lone; memcpy(&h_lone, map + (c_lone % DMSH_GMEM_MAP_ENTRIES) * DMSH_GMEM_MAP_ENTRY + 24, sizeof h_lone);
+        unsigned e_lone = h_lone % DMSH_GMEM_MAP_ENTRIES;
+        uint64_t r_lone[2]; memcpy(r_lone, map + (size_t)e_lone * DMSH_GMEM_MAP_ENTRY, sizeof r_lone);
+        CHECK("lone <2 MiB pool gets a 2 MiB chunk hint", e_lone && h_lone / DMSH_GMEM_MAP_ENTRIES == c_lone && r_lone[0] == (uintptr_t)lone && r_lone[1] == (uintptr_t)lone + 64 * 1024);
+        uint64_t c_sh = (uint64_t)(uintptr_t)sh0 >> DMSH_GMEM_HINT_SHIFT;
+        uint32_t h_sh; memcpy(&h_sh, map + (c_sh % DMSH_GMEM_MAP_ENTRIES) * DMSH_GMEM_MAP_ENTRY + 24, sizeof h_sh);
+        CHECK("multi-pool 2 MiB chunk stays unhinted", !(h_sh && h_sh / DMSH_GMEM_MAP_ENTRIES == c_sh));
+        int split_lo_ok = 0, split_hi_ok = 0;
+        for (int k = 1; k < DMSH_GMEM_MAP_ENTRIES; k++) {
+            uint64_t r[2]; uint32_t sp;
+            memcpy(r, map + (size_t)k * DMSH_GMEM_MAP_ENTRY, sizeof r);
+            memcpy(&sp, map + (size_t)k * DMSH_GMEM_MAP_ENTRY + 28, sizeof sp);
+            if (r[0] == s_lo && r[1] == 0x4000000000ull && sp == 0x10000u) split_lo_ok = 1;
+            if (r[0] == 0x4000000000ull && r[1] == s_hi && sp == 0x10000u) split_hi_ok = 1;
+        }
+        CHECK("4 GiB-straddling pool splits into two non-zero-span entries", split_lo_ok && split_hi_ok);
+        finish();
+        pthread_mutex_lock(&g_mu); g_pools[s_idx] = g_pools[--g_npool]; g_pidx_ok = 0; atomic_fetch_add(&g_pool_gen, 1); pthread_mutex_unlock(&g_mu);
+        mtl_pool_del(lone); mtl_pool_del(sh0); mtl_pool_del(sh1); mtl_drain();
+        munmap(reg, 8 * MB); (void)pg;
+    }
     // A texture a shader read is made, and goes into the table in place: no new table, and the budget does not apply. One nobody read is not made: its entry is its stand-in (pool_stand; the
     // dummy with DM_NVN_POOL_STANDIN=0). A render target no pass has written stays the dummy
     {

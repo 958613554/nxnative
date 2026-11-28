@@ -16953,23 +16953,39 @@ static id<MTLBuffer> gmem_map(void) {
         if (!addr_meets(p->lo, p->hi)) continue;
         uint64_t lo = MAX((uint64_t)p->lo, end), hi = p->hi;
         if (lo >= hi) continue;
-        if (n == DMSH_GMEM_MAP_ENTRIES) { over++; continue; }
         if (!p->res) { pool_materialize(p); res_add(p->buf); p->res = 1; g_pool_res_n++; }
-        uint8_t *entry = t + (size_t)n++ * DMSH_GMEM_MAP_ENTRY;
-        uint64_t e[3] = {lo, hi, p->gpu - p->base};
-        memcpy(entry, e, sizeof e);
-        if (hi - lo <= UINT32_MAX && (lo >> 32) == ((hi - 1) >> 32)) {
-            uint32_t span = (uint32_t)(hi - lo);
+        uint64_t delta = p->gpu - p->base;
+        // Split ranges that cross a 4 GiB boundary (or span a full 4 GiB) into 4 GiB-aligned / 2 GiB sub-ranges so every entry carries a non-zero 32-bit span for the shader's register cache
+        while (lo < hi) {
+            if (n == DMSH_GMEM_MAP_ENTRIES) { over++; break; }
+            uint64_t sub_hi = hi;
+            uint64_t next4g = ((lo >> 32) + 1) << 32;
+            if (next4g > lo && next4g < sub_hi) sub_hi = next4g;
+            if (sub_hi - lo > UINT32_MAX) sub_hi = lo + (1ull << 31);
+            uint8_t *entry = t + (size_t)n++ * DMSH_GMEM_MAP_ENTRY;
+            uint64_t e[3] = {lo, sub_hi, delta};
+            memcpy(entry, e, sizeof e);
+            uint32_t span = (uint32_t)(sub_hi - lo);
             memcpy(entry + 28, &span, sizeof span);
+            lo = sub_hi;
         }
-        end = hi;
+        if (lo > end) end = lo;
     }
     pthread_mutex_unlock(&g_mu);
-    // Each 2 MiB chunk wholly inside an entry gets a hint, so most accesses skip the binary search. A colliding chunk replaces the hint and the shader's tag check sends the other to the search
+    // Each 2 MiB chunk intersecting only one entry gets a hint (including < 2 MiB sparse pools: dmsh_raw_find checks both start and end). Chunks shared by multiple entries stay unhinted; colliding chunks fall back to binary search via the tag check
     for (int k = 1; k < n; k++) {
         const uint64_t *e = (const uint64_t *)(t + (size_t)k * DMSH_GMEM_MAP_ENTRY);
-        uint64_t size = 1ull << DMSH_GMEM_HINT_SHIFT, first = (e[0] + size - 1) >> DMSH_GMEM_HINT_SHIFT, last = e[1] >> DMSH_GMEM_HINT_SHIFT;
-        for (uint64_t c = first; c < last && c < (1ull << (32 - 13)); c++) {
+        if (e[1] <= e[0]) continue;
+        uint64_t c0 = e[0] >> DMSH_GMEM_HINT_SHIFT, c1 = (e[1] - 1) >> DMSH_GMEM_HINT_SHIFT;
+        if (k > 1) {
+            uint64_t prev_end; memcpy(&prev_end, t + (size_t)(k - 1) * DMSH_GMEM_MAP_ENTRY + 8, sizeof prev_end);
+            if (prev_end > (c0 << DMSH_GMEM_HINT_SHIFT)) c0++;
+        }
+        if (k + 1 < n) {
+            uint64_t next_lo; memcpy(&next_lo, t + (size_t)(k + 1) * DMSH_GMEM_MAP_ENTRY, sizeof next_lo);
+            if (next_lo < ((c1 + 1) << DMSH_GMEM_HINT_SHIFT)) { if (c1 == 0) continue; c1--; }
+        }
+        for (uint64_t c = c0; c <= c1 && c < (1ull << (32 - 13)); c++) {
             uint32_t hint = (uint32_t)(c << 13 | (unsigned)k);
             memcpy(t + (size_t)(c % DMSH_GMEM_MAP_ENTRIES) * DMSH_GMEM_MAP_ENTRY + 24, &hint, sizeof hint);
         }
