@@ -1521,8 +1521,38 @@ typedef struct {
     DIR *d; char path[1024];
     const romfs_img *img; uint64_t img_first, img_count, img_pos;
     DirectoryEntry *snap; int64_t nsnap, psnap;
+    const char **snap_sorted;
     int mode;
 } dirh_t;
+static int cstr_ptr_cmp(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+static int snap_has_name(const dirh_t *h, const char *s, size_t len) {
+    if (!h->snap_sorted) return 0;
+    size_t lo = 0, hi = (size_t)h->nsnap;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        const char *m = h->snap_sorted[mid];
+        int c = strncmp(m, s, len);
+        if (!c) c = (m[len] != '\0');
+        if (!c) return 1;
+        if (c < 0) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
+static int img_dir_has_name(const romfs_img *m, uint64_t first, uint64_t count, const char *name) {
+    size_t len = strlen(name);
+    uint64_t lo = first, hi = first + count;
+    while (lo < hi) {
+        uint64_t mid = lo + (hi - lo) / 2;
+        const img_ent *x = &m->e[mid];
+        int c = memcmp(m->names + x->name, name, x->nlen < len ? x->nlen : len);
+        if (!c) c = (x->nlen > len) - (x->nlen < len);
+        if (!c) return 1;
+        if (c < 0) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
 typedef struct { const char *name; size_t at; } name_at;
 static int name_at_cmp(const void *a, const void *b) {
     const name_at *x = a, *y = b; int c = strcmp(x->name, y->name);
@@ -1542,19 +1572,20 @@ static size_t names_first(char (*names)[0x301], size_t n) {
     return m;
 }
 // 0, or -1 with errno set when a folder of the overlay cannot be read: nothing is kept. rest is already forward-slash and parent-normalized.
+// For an image base, only the physical overlay layers are materialized into h->snap; the sorted image child run is attached to h->img and streamed without copying or per-child lookups.
 static int dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     char *roots = strdup(m->overlay);
-    size_t cap = 2048; char (*names)[0x301] = malloc(cap * sizeof *names);
+    size_t cap = 64; char (*names)[0x301] = malloc(cap * sizeof *names);
     const char **all = calloc(65, sizeof *all);
     char *parent = malloc(1024), *guest = malloc(0x301), *rel = malloc(2048), *resolved = malloc(1024);
     if (!roots || !names || !all || !parent || !guest || !rel || !resolved) die("rom overlay directory snapshot allocation failed");
     size_t nn = 0; int nr = 0, err = 0;
-    all[nr++] = m->dir;
+    if (!m->img) all[nr++] = m->dir;
     char *save = NULL;
     for (char *root = strtok_r(roots, ":", &save); root && nr < 65; root = strtok_r(NULL, ":", &save)) all[nr++] = root;
     for (int ri = nr - 1; ri >= 0; ri--) {
         if (!root_path(all[ri], rest, parent, 1024)) continue;
-        DIR *x = opendir(parent); if (!x) continue;   // an image base is no folder: its names are added below
+        DIR *x = opendir(parent); if (!x) continue;
         struct dirent *e;
         while ((e = dir_next(x))) {
             if (!guest_name(parent, e->d_name, guest, 0x301)) continue;
@@ -1564,23 +1595,31 @@ static int dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
         err = errno; closedir(x);
         if (err) goto done;
     }
-    int64_t dk = m->img ? img_find(m->img, rest) : -1;
-    if (dk >= 0 && !m->img->e[dk].type)   // the image's own entries of this directory, after the overlay folders'
-        for (uint64_t j = 0; j < m->img->e[dk].b; j++) {
-            const img_ent *c = &m->img->e[m->img->e[dk].a + j]; size_t l = c->nlen < 0x300 ? c->nlen : 0x300;
-            memcpy(guest, m->img->names + c->name, l); guest[l] = 0;
-            if (nn == cap && !(names = realloc(names, (cap *= 2) * sizeof *names))) die("rom overlay directory snapshot allocation failed");
-            strlcpy(names[nn++], guest, sizeof names[0]);
+    if (nn) {
+        nn = names_first(names, nn);
+        h->snap = calloc(nn, sizeof *h->snap); h->nsnap = (int64_t)nn;
+        if (!h->snap) die("rom overlay directory snapshot allocation failed");
+        for (size_t j = 0; j < nn; j++) {
+            strlcpy(h->snap[j].name, names[j], sizeof h->snap[j].name);
+            snprintf(rel, 2048, "%s/%s", rest, names[j]);
+            struct stat st;
+            if (rom_overlay_path(m, rel, resolved, 1024) && !stat(resolved, &st)) {
+                h->snap[j].type = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE;
+                h->snap[j].size = S_ISDIR(st.st_mode) ? 0 : st.st_size;
+            }
         }
-    nn = names_first(names, nn);
-    h->snap = calloc(nn ? nn : 1, sizeof *h->snap); h->nsnap = (int64_t)nn;
-    if (!h->snap) die("rom overlay directory snapshot allocation failed");
-    for (size_t j = 0; j < nn; j++) {
-        strlcpy(h->snap[j].name, names[j], sizeof h->snap[j].name);
-        snprintf(rel, 2048, "%s/%s", rest, names[j]);
-        struct stat st; int64_t k;
-        if (rom_overlay_path(m, rel, resolved, 1024)) { if (!stat(resolved, &st)) { h->snap[j].type = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; h->snap[j].size = S_ISDIR(st.st_mode) ? 0 : st.st_size; } }
-        else if (m->img && (k = img_find(m->img, rel)) >= 0) { h->snap[j].type = m->img->e[k].type ? ENT_FILE : ENT_DIR; h->snap[j].size = m->img->e[k].type ? (int64_t)m->img->e[k].b : 0; }
+    }
+    if (m->img) {
+        int64_t dk = img_find(m->img, rest);
+        if (dk >= 0 && !m->img->e[dk].type) {
+            h->img = m->img; h->img_first = m->img->e[dk].a; h->img_count = m->img->e[dk].b; h->img_pos = 0;
+            if (nn) {
+                h->snap_sorted = malloc(nn * sizeof *h->snap_sorted);
+                if (!h->snap_sorted) die("rom overlay directory snapshot allocation failed");
+                for (size_t j = 0; j < nn; j++) h->snap_sorted[j] = h->snap[j].name;
+                qsort(h->snap_sorted, nn, sizeof *h->snap_sorted, cstr_ptr_cmp);
+            }
+        }
     }
 done:
     free(resolved); free(rel); free(guest); free(parent); free(all); free(names); free(roots);
@@ -1618,6 +1657,7 @@ HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → o
     h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;
     if (c) for (int i = 0; i < g_nmnt; i++) if (g_mnt[i].overlay[0] && mnt_is(&g_mnt[i], p, (size_t)(c - p))) {
         if (dir_snapshot(h, &g_mnt[i], rest)) { int err = errno; closedir(d); free(h); errno = err; return err_res("opendir", hp); }
+        closedir(d); h->d = NULL;
         break;
     }
     *out = (uint64_t)h; return RES_OK;
@@ -1626,18 +1666,23 @@ HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandl
     SDK_HANDLE(hh, "_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", Result (*)(int64_t *, DirectoryEntry *, uint64_t, int64_t), RES_FAIL, count, ents, hh, max);
     if (!hh) { *count = 0; return RES_FAIL; }
     PATH_LOCK(); dirh_t *h = (dirh_t *)hh; int64_t n = 0; struct dirent *e;
-    if (h->img) {
-        while (n < max && h->img_pos < h->img_count) {
+    if (!h->d) {
+        while (n < max && h->psnap < h->nsnap) {
+            DirectoryEntry *src = &h->snap[h->psnap++];
+            if (!(h->mode & (src->type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE))) continue;
+            ents[n++] = *src;
+        }
+        while (n < max && h->img && h->img_pos < h->img_count) {
             const img_ent *c = &h->img->e[h->img_first + h->img_pos++];
             if (!(h->mode & (c->type ? DIRMODE_FILE : DIRMODE_DIR))) continue;
+            size_t l = c->nlen < sizeof ents[0].name ? c->nlen : sizeof ents[0].name - 1;
+            if (snap_has_name(h, h->img->names + c->name, l)) continue;
             DirectoryEntry *o = &ents[n++]; memset(o, 0, sizeof *o);
-            size_t l = c->nlen < sizeof o->name ? c->nlen : sizeof o->name - 1;
             memcpy(o->name, h->img->names + c->name, l);
             o->type = c->type ? ENT_FILE : ENT_DIR; o->size = c->type ? (int64_t)c->b : 0;
         }
         *count = n; return RES_OK;
     }
-    if (h->snap) { while (n < max && h->psnap < h->nsnap) { DirectoryEntry *src = &h->snap[h->psnap++]; if (!(h->mode & (src->type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE))) continue; ents[n++] = *src; } *count = n; return RES_OK; }
     int dfd = dirfd(h->d);
     while (n < max) {
         if (!(e = dir_next(h->d))) { if (errno) { *count = n; return err_res("readdir", h->path); } break; }
@@ -1660,7 +1705,7 @@ HLE_FORCE("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", "fsp-srv → close
         return;
     }
     if (!hh) return;   // the game also closes after a failed open (handle 0): nothing to do in the original either
-    dirh_t *h = (dirh_t *)hh; if (h->d) closedir(h->d); free(h->snap); free(h);
+    dirh_t *h = (dirh_t *)hh; if (h->d) closedir(h->d); free(h->snap_sorted); free(h->snap); free(h);
 }
 
 // ---------- Overloads from newer SDKs (SDK 16: MountRom without a cache, ReadFile without the bytes-read output / with read options, directory entry count) ----------
@@ -1705,13 +1750,30 @@ HLE_FORCE("_ZN2nn2fs8ReadFileENS0_10FileHandleElPvmRKNS0_10ReadOptionE", "fsp-sr
 HLE_FORCE("_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", "fsp-srv; directory entry count (filtered by the mode given at open, read position untouched)", Result, h_fs_DirCount, int64_t *out, uint64_t hh) { dm_thread_service_request();
     SDK_HANDLE(hh, "_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", Result (*)(int64_t *, uint64_t), RES_FAIL, out, hh);
     PATH_LOCK(); dirh_t *h = (dirh_t *)hh; int64_t n = 0;
-    if (h->img) {
+    if (!h->d) {
         int want = h->mode & (DIRMODE_DIR | DIRMODE_FILE);
-        if (want == (DIRMODE_DIR | DIRMODE_FILE)) n = (int64_t)h->img_count;
-        else if (want) for (uint64_t i = 0; i < h->img_count; i++) if (want & (h->img->e[h->img_first + i].type ? DIRMODE_FILE : DIRMODE_DIR)) n++;
+        if (want) {
+            for (int64_t i = 0; i < h->nsnap; i++)
+                if (want & (h->snap[i].type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE)) n++;
+            if (h->img) {
+                if (want == (DIRMODE_DIR | DIRMODE_FILE)) {
+                    int64_t dup = 0;
+                    for (int64_t i = 0; i < h->nsnap; i++)
+                        dup += img_dir_has_name(h->img, h->img_first, h->img_count, h->snap[i].name);
+                    n += (int64_t)h->img_count - dup;
+                } else {
+                    for (uint64_t i = 0; i < h->img_count; i++) {
+                        const img_ent *c = &h->img->e[h->img_first + i];
+                        if (!(want & (c->type ? DIRMODE_FILE : DIRMODE_DIR))) continue;
+                        size_t l = c->nlen < sizeof((DirectoryEntry *)0)->name ? c->nlen : sizeof((DirectoryEntry *)0)->name - 1;
+                        if (snap_has_name(h, h->img->names + c->name, l)) continue;
+                        n++;
+                    }
+                }
+            }
+        }
         *out = n; return RES_OK;
     }
-    if (h->snap) { for (int64_t i = 0; i < h->nsnap; i++) if (h->mode & (h->snap[i].type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE)) n++; *out = n; return RES_OK; }
     DIR *d = opendir(h->path); if (!d) return err_res("opendir", h->path);
     struct dirent *e;
     while ((e = dir_next(d))) {
