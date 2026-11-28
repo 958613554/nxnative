@@ -17327,7 +17327,7 @@ static uint64_t htab_gpu(int stage, const nvn_rbind *b, __unsafe_unretained id<M
     if (p->ecap < need_e) { free(p->elems); p->elems = realloc_or_die(NULL, 8 * (size_t)need_e, "handle table elements"); p->ecap = need_e; }
     memcpy(p->elems, e, 8 * (size_t)need_e);
     if (metadata) {
-        if (p->lcap < need_e) { free(p->lead); p->lead = realloc_or_die(NULL, 4 * (size_t)need_e, "handle table leads"); p->lcap = need_e; }
+        if (!p->lead || p->lcap < need_e) { free(p->lead); p->lead = realloc_or_die(NULL, 4 * (size_t)need_e, "handle table leads"); p->lcap = need_e; }
         memcpy(p->lead, lead, metadata);
     }
     p->reg = rg; p->sgen = sg; p->pass = g_pass.serial; p->sub = g_sub_serial;
