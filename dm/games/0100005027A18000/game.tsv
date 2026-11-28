@@ -1,0 +1,37 @@
+# Graveyard Keeper 2, Switch update 1.0.5. Unity 6000.3.9f1 IL2CPP, SDK 21.4.4, NVN.
+
+# ---- Identity ----
+title_id	0100005027A18000
+program_id	0100005027A18000
+
+# ---- App ----
+name	Graveyard Keeper 2
+ipa	GraveyardKeeper2.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v327680	1.0.5	main=2d29e899e84e185402ca1749946e3a49	subsdk0=fc537f0b21c880e89d6f247d22a150ca	sdk=148394139d9d26ca8afd5c9ba5d30601
+package	v327680
+shader_versions	v327680
+
+# ---- Files ----
+# Load order on Horizon. subsdk0 is NintendoSDK_movie.
+modules	main subsdk0 sdk
+romfs_marker	Data/sharedassets0.resource
+zip_store	.assets:.bin:.bundle:.dat:.png:.resource:.ress:.metallib
+
+# ---- Memory ----
+# The NPDM requests 16 MiB of system resource. The game allocates address regions without setting a heap.
+sys_resource	0x1000000
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Graveyard Keeper 2 shaders
+
+# ---- Graphics ----
+# The game sets NVN's near plane to zero. Offline pipeline bases use the same depth mode.
+depth_mode	zero
