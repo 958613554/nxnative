@@ -1,0 +1,36 @@
+# WarioWare: Get It Together!, Switch base build 1.0.0.
+# Format: see dm/games/README.md
+
+# ---- Identity ----
+title_id	0100563010E0C000
+program_id	0100563010E0C000
+
+# ---- App ----
+name	WarioWare: Get It Together!
+ipa	WarioWareGetItTogether.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.0	main=e6784f640b1cdff90c8718a11294dbf3	subsdk0=ebedb2645cb8a961714ebc29e9eee0a9	subsdk1=84e50460493a12f26100e5150fbff271	sdk=d9add76fc264863d85fbbd1d70076c76
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# Horizon's load order: subsdk0 is GLSLC and subsdk1 is NintendoSDK_movie.
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	Archive/Sound.nx.bea
+zip_store	.bea:.mp4:.webm:.metallib
+
+# ---- Memory ----
+# The NPDM has no system resource. Startup uses the heap path and takes 3.14 GB of the 3.25 GB heap region.
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+
+# ---- Shaders ----
+shader_groups	/stream/=stream /Archive/=archive /movie/=movie
+shader_note	WarioWare: Get It Together! shaders
+# The game sets the NVN near plane to zero. The prebuild uses the matching main0_z vertex entries.
+depth_mode	zero
