@@ -16,6 +16,7 @@
 #include "dm.h"
 #include "front_role.h"
 #include "front_mac_present.h"
+#import "front_hdr_apple.h"
 #include "dm_input.h"
 #include "front.h"
 #include "hle.h"
@@ -82,7 +83,7 @@ static void screen_refresh(NSScreen *screen) {   // main thread: refresh capabil
     } else {
         g_screen_native_fps = g_screen_fps;
     }
-    hdr_screen(screen);   // its EDR headroom (AppKit posts the screen parameters notification when the live headroom changes) and colour space
+    hdr_screen(screen);   // its EDR headroom (AppKit posts the screen parameters notification when the live headroom changes)
     hdr_menu_screen();    // the HDR menu's greyed-out items follow the screen
 }
 static _Atomic int g_fullscreen;   // the window is in fullscreen (set when it has entered and when it has left)
@@ -149,37 +150,29 @@ static NSWindow *g_win; static _Atomic int g_match_want;   // the game's window;
 static double g_match_switched, g_match_undone;   // when this host last switched a screen, when the screens last undid a switch (CACurrentMediaTime, 0 = never)
 static int g_match_bounces, g_match_bounced;   // switches in a row due soon after an undone one; the rate is left alone until fullscreen is left or the frame rate changes
 static int g_match_recheck;   // a delayed settle check is already scheduled on the main queue
-// HDR output (front.h front_layer_hdr, front_edr_poll; nvn_mtl.m, HDR output). The layer the present asks for, applied on the main thread: SDR is the layer as made below
-// (BGRA8Unorm, no colour space, so its bytes reach the panel as they are); HDR is RGBA16Float with extended range content and no EDR metadata, in the screen's own colour space
-// extended and linear (the same colours as the SDR layer; Display P3 when the screen has none), for both HDR routes: the present writes BT.709 values for a PQ window too. The
+// HDR output (front.h front_layer_hdr, front_edr_poll; nvn_mtl.m, HDR output). The layer the present asks for, applied on the main thread. Both layers are labelled with the
+// colours their values are in, set here rather than left to Core Animation's default for the format (which gives BGRA8Unorm kCGColorSpaceSRGB on macOS 27.2.1, but none for a
+// new layer): SDR is BGRA8Unorm in kCGColorSpaceSRGB, the game's 8-bit sRGB bytes, colour-matched to the screen; HDR is RGBA16Float with extended range content and no EDR
+// metadata in kCGColorSpaceExtendedLinearSRGB, for both HDR routes: the present writes linear BT.709 values, which show as the SDR layer's bytes do, a PQ window's colours
+// outside BT.709 as the negative values the extended space carries (on screen, Display P3 red written so shows as Display P3 red). Neither is ever NULL: a layer without a
+// colour space is not colour-matched at all (CAMetalLayer.h), and its values would show in the panel's primaries, more saturated on a P3 screen. The
 // screen's headroom goes to the present: maximumPotentialExtendedDynamicRangeColorComponentValue, what the screen can show, and maximumExtendedDynamicRangeColorComponentValue, what
 // it shows now (above 1.0 only once a layer wants extended range content)
 void mtl_present_edr(float potential, float live);   // nvn_mtl.h
 static _Atomic int g_hdr_want;   // the mode the present asked for (front.h): 0 SDR, 1 HDR
 static int g_hdr_mode;   // main thread: the mode the layer has
-static CGColorSpaceRef hdr_itm_space(NSScreen *screen) {   // the HDR layer's colour space: the screen's own, extended and linear; Display P3 when the screen or its space is not known (+1)
-    CGColorSpaceRef sc = screen.colorSpace.CGColorSpace, cs = sc ? CGColorSpaceCreateExtendedLinearized(sc) : NULL;
-    return cs ? cs : CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3);
-}
-static void hdr_screen(NSScreen *screen) {   // main thread: the screen's headroom to the present, and the HDR layer's colour space for this screen
+static void hdr_screen(NSScreen *screen) {   // main thread: the screen's headroom to the present
     if (!screen) return;
     mtl_present_edr((float)screen.maximumPotentialExtendedDynamicRangeColorComponentValue, (float)screen.maximumExtendedDynamicRangeColorComponentValue);
-    if (!g_hdr_mode || !g_layer) return;
-    CGColorSpaceRef cs = hdr_itm_space(screen);
-    if (!g_layer.colorspace || !CFEqual(g_layer.colorspace, cs)) { g_layer.colorspace = cs; LOG("front end: HDR layer in %s", screen.colorSpace.localizedName.UTF8String ?: "Display P3"); }
-    CGColorSpaceRelease(cs);
 }
 static void hdr_apply(void) {   // main thread
     int m = g_hdr_want;
     if (m == g_hdr_mode || !g_layer) return;
     g_hdr_mode = m;
-    g_layer.wantsExtendedDynamicRangeContent = m != 0;
-    g_layer.pixelFormat = m ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm;
-    // never an RGBA16Float layer without a colour space: without one its linear values would reach the panel as they are; the window's screen refines it below (hdr_screen)
-    CGColorSpaceRef cs = m ? hdr_itm_space(g_win.screen) : NULL;
-    g_layer.colorspace = cs; CGColorSpaceRelease(cs);   // SDR: none, as before
-    LOG("front end: %s", m ? "HDR layer (RGBA16Float, extended range, the screen's colour space linear)" : "SDR layer (BGRA8Unorm)");
-    hdr_screen(g_win.screen);   // the colour space of the window's screen, and the live headroom, which changes once the layer wants extended range content
+    front_hdr_layer_apply(g_layer, m);
+    char b[96];
+    LOG("front end: %s, in %s", m ? "HDR layer (RGBA16Float, extended range, linear)" : "SDR layer (BGRA8Unorm)", front_hdr_space_name(g_layer.colorspace, b, sizeof b));
+    hdr_screen(g_win.screen);   // the live headroom, which changes once the layer wants extended range content
     hdr_menu_log("layer");
 }
 void front_layer_hdr(int mode) { if (atomic_exchange(&g_hdr_want, mode) != mode) dispatch_async(dispatch_get_main_queue(), ^{ hdr_apply(); }); }
@@ -1936,7 +1929,7 @@ void front_run(void (*guest)(void)) {
         v.wantsLayer = YES;
         g_layer = [CAMetalLayer layer];
         g_layer.device = MTLCreateSystemDefaultDevice();
-        g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        front_hdr_layer_apply(g_layer, 0);   // the game's sRGB bytes, labelled as such rather than by the format's default
         g_layer.contentsScale = win.backingScaleFactor;
         const char *fs = getenv("DM_FULLSCREEN");   // 1 (or any value but 0): start in fullscreen; 0, the settings window's Window, or unset: a window
         int want_fs = fs && strcmp(fs, "0");

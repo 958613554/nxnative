@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <stdatomic.h>   // g_screen_hz: read on the main thread, used from the render thread (front_screen_max_fps)
 #include "front.h"
+#import "front_hdr_apple.h"
 #include "hle.h"
 #include "dm.h"
 #include "haptics_apple.h"
@@ -49,7 +50,8 @@ static UILabel *front_ios_fps_label(void);
             [(UIView *)environment setNeedsLayout];
         }];
         CAMetalLayer *l = (CAMetalLayer *)self.layer;
-        l.device = MTLCreateSystemDefaultDevice(); l.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        l.device = MTLCreateSystemDefaultDevice();
+        front_hdr_layer_apply(l, 0);   // the game's sRGB bytes, labelled as such (HDR output, below)
         l.contentsScale = MAX(self.traitCollection.displayScale, 1); l.framebufferOnly = NO; l.opaque = YES;
         self.backgroundColor = UIColor.blackColor;
     }
@@ -439,22 +441,16 @@ static void screen_refresh(void) {
     int was = atomic_exchange_explicit(&g_screen_hz, hz, memory_order_relaxed);
     if (was && was != hz) LOG("front end: screen %d Hz → %d Hz%s", was, hz, lpm ? " (Low Power Mode)" : "");
 }
-// HDR output (front.h front_layer_hdr, front_edr_poll; nvn_mtl.m, HDR output). The layer the present asks for, applied on the main thread: SDR is the layer as DmGameView makes it
-// (BGRA8Unorm, no colour space); HDR is RGBA16Float with extended range content and no EDR metadata, extended linear in the screen's gamut, for both HDR routes (the present
-// writes BT.709 values for a PQ window too). The headroom of the screen the game view is on (the phone's, or a TV's) goes to the present on screen refresh (including before boot,
+// HDR output (front.h front_layer_hdr, front_edr_poll; nvn_mtl.m, HDR output). The layer the present asks for, applied on the main thread: as in front_mac.m, each layer labelled with the
+// colours its values are in, never left to the system's default: SDR is BGRA8Unorm in kCGColorSpaceSRGB (DmGameView sets it); HDR is RGBA16Float with extended range content and
+// no EDR metadata in kCGColorSpaceExtendedLinearSRGB, for both HDR routes (the present writes linear BT.709 values for a PQ window too, and its colours outside BT.709 as negative
+// values); leaving HDR sets kCGColorSpaceSRGB again, never NULL. The headroom of the screen the game view is on (the phone's, or a TV's) goes to the present on screen refresh (including before boot,
 // so a game querying HDR once at startup sees EDR) and every 32 presents while HDR is on: UIScreen's potentialEDRHeadroom and currentEDRHeadroom (iOS 16), which UIKit reads on the main thread and posts no notification for
 void mtl_present_edr(float potential, float live);   // nvn_mtl.h
 static _Atomic int g_hdr_want;   // the mode the present asked for (front.h): 0 SDR, 1 HDR
 static int g_hdr_mode;   // main thread: the mode the layer has
-// The HDR layer's colour space: the gamut the SDR layer's bytes show in, so both HDR modes keep its look. sRGB for a game view on an sRGB screen (a TV), Display P3 otherwise
-static int hdr_srgb(void) { return (g_root.game ?: g_root.view).traitCollection.displayGamut == UIDisplayGamutSRGB; }
-static CGColorSpaceRef hdr_space(void) { return CGColorSpaceCreateWithName(hdr_srgb() ? kCGColorSpaceExtendedLinearSRGB : kCGColorSpaceExtendedLinearDisplayP3); }
-static void hdr_screen_for(UIScreen *s) {   // main thread: the screen's headroom to the present, and the HDR layer's colour space for that screen
+static void hdr_screen_for(UIScreen *s) {   // main thread: the screen's headroom to the present
     if (s) mtl_present_edr((float)s.potentialEDRHeadroom, (float)s.currentEDRHeadroom);
-    if (!g_hdr_mode || !g_layer) return;
-    CGColorSpaceRef cs = hdr_space();
-    if (!g_layer.colorspace || !CFEqual(g_layer.colorspace, cs)) { g_layer.colorspace = cs; LOG("front end: HDR layer in %s extended linear", hdr_srgb() ? "sRGB" : "Display P3"); }
-    CGColorSpaceRelease(cs);
 }
 static void hdr_screen(void) { hdr_screen_for((g_root.game ?: g_root.view).window.windowScene.screen); }
 void front_layer_hdr(int mode) {
@@ -463,11 +459,9 @@ void front_layer_hdr(int mode) {
         int m = g_hdr_want;
         if (m == g_hdr_mode || !g_layer) return;
         g_hdr_mode = m;
-        g_layer.wantsExtendedDynamicRangeContent = m != 0;
-        g_layer.pixelFormat = m ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm;
-        CGColorSpaceRef cs = m ? hdr_space() : NULL;
-        g_layer.colorspace = cs; CGColorSpaceRelease(cs);   // SDR: none
-        LOG("front end: %s", m ? "HDR layer (RGBA16Float, extended linear)" : "SDR layer (BGRA8Unorm)");
+        front_hdr_layer_apply(g_layer, m);
+        char b[96];
+        LOG("front end: %s, in %s", m ? "HDR layer (RGBA16Float, extended linear)" : "SDR layer (BGRA8Unorm)", front_hdr_space_name(g_layer.colorspace, b, sizeof b));
         hdr_screen();
     });
 }
