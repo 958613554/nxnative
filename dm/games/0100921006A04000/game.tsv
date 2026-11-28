@@ -1,0 +1,33 @@
+# Night in the Woods 1.0.2, Unity 5.6.4p1 IL2CPP, Nintendo SDK 3.5.2, NVN.
+
+# ---- Identity ----
+title_id	0100921006A04000
+program_id	0100921006A04000
+
+# ---- App ----
+name	Night in the Woods
+ipa	NightInTheWoods.ipa
+app_category	public.app-category.adventure-games
+
+# ---- Versions ----
+build	v131072	1.0.2	main=29d22ff3cd14f641a985d8dcf03c92b5	subsdk0=3db21e02d97a3ffaaae2ee0053a1bfb0	sdk=2c478941dc5a7fb745c31b92bc1f7ddf
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# subsdk0 is NintendoSDK_movie.
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/Master.bank
+zip_store	.bank:.dat:.mov:.mp4:.resource:.ress:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource, so virtual address memory is disabled.
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Night in the Woods shaders

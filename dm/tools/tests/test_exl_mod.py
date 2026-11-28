@@ -16,6 +16,7 @@ sys.path.insert(0, str(TOOLS))
 
 import mod_layout   # noqa: E402
 import nso   # noqa: E402
+import nso_code   # noqa: E402
 from nso_asm import ADRP   # noqa: E402
 from scripts import prepare_mod   # noqa: E402
 
@@ -38,7 +39,7 @@ def pack_nso(text: bytes, ro: bytes, data: bytes, ro_off: int, data_off: int, bs
     return bytes(hdr) + text + ro + data
 
 
-def devkita64_nso(small_relayout: bool = False, no_eh: bool = False) -> bytes:
+def devkita64_nso(small_relayout: bool = False, no_eh: bool = False, tableless_header: bool = False) -> bytes:
     """Build a minimal devkitA64-style NSO with empty MOD0 eh_frame_hdr range pointing directly at .eh_frame."""
     if small_relayout:
         tsz, ro, do, end = 0x1000, 0x1000, 0x2000, 0x3000
@@ -55,7 +56,10 @@ def devkita64_nso(small_relayout: bool = False, no_eh: bool = False) -> bytes:
     struct.pack_into('<I', img, 4, m0)
     img[m0:m0 + 4] = b'MOD0'
     eh_rel = 0 if no_eh else (ehf - m0)
-    struct.pack_into('<6i', img, m0 + 4, dyn - m0, end - m0, end - m0, eh_rel, eh_rel, do + 0x300 - m0)
+    hdr_rel = eh_rel - 8 if tableless_header else eh_rel
+    struct.pack_into('<6i', img, m0 + 4, dyn - m0, end - m0, end - m0, hdr_rel, eh_rel, do + 0x300 - m0)
+    if tableless_header:
+        struct.pack_into('<4Bi', img, ehf - 8, 1, 0x1B, 0xFF, 0xFF, 4)
 
     # fn1: adrp x0, pers_slot; svc #0x1e; ret; fn2: nop; ret
     struct.pack_into('<3I', img, fn1, ADRP(0, fn1, pers_slot), SVC_TICK, RET)
@@ -83,6 +87,12 @@ def devkita64_nso(small_relayout: bool = False, no_eh: bool = False) -> bytes:
         struct.pack_into('<IIiIB', img, fde1, 16, fde1 + 4 - cie0, fn1 - (fde1 + 8), 12, 0)
         fde2 = fde1 + 20
         struct.pack_into('<IIiIB', img, fde2, 16, fde2 + 4 - cie0, fn2 - (fde2 + 8), 8, 0)
+        if tableless_header:
+            # Dead records still present in .eh_frame: a zero displacement, an unused entry PC, and an empty range.
+            for i, (pc, span) in enumerate(((None, 16), (0, 16), (fn2, 0)), 1):
+                fde = fde2 + 20 * i
+                disp = 0 if pc is None else pc - (fde + 8)
+                struct.pack_into('<IIiIB', img, fde, 16, fde + 4 - cie0, disp, span, 0)
         # Zero terminator follows naturally
 
     return pack_nso(bytes(img[:tsz]), bytes(img[ro:do]), bytes(img[do:end]), ro_off=ro, data_off=do)
@@ -102,7 +112,11 @@ class DevkitA64EhFrame(unittest.TestCase):
         self.assertEqual(new_rel, old_rel + d)
 
     def test_patch_nso_rewrites_raw_eh_frame_and_no_eh_nso(self):
-        for name, raw in (('subsdk9', devkita64_nso()), ('subsdk8', devkita64_nso(no_eh=True))):
+        for name, raw, ranges in (
+            ('main', devkita64_nso(tableless_header=True), [(0x100, 0x10C), (0x120, 0x128)]),
+            ('subsdk9', devkita64_nso(), [(0x100, 0x10C), (0x120, 0x128)]),
+            ('subsdk8', devkita64_nso(no_eh=True), []),
+        ):
             with tempfile.TemporaryDirectory() as td:
                 src = Path(td) / name
                 out = Path(td) / 'out'
@@ -120,6 +134,7 @@ class DevkitA64EhFrame(unittest.TestCase):
                 self.assertTrue((out / f'{name}.changed.tsv').is_file())
                 gates = (out / f'{name}.gates.tsv').read_text()
                 self.assertIn('\tsvc\t30\t', gates)
+                self.assertEqual(nso_code.fde_ranges(nso.load(raw, name).image), ranges)
 
 
 class PrepareModScript(unittest.TestCase):

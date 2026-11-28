@@ -469,6 +469,13 @@ To enroll a cut for any game's own module:
 
 ## Functions, unwind entries and data in text
 
+### Unwind header with no search table
+
+- **Symptom:** `KeyError: 15` while `patch_nso.py` decodes the FDE count in `.eh_frame_hdr`.
+- **Cause:** The header encodes the count and search table as omitted (`0xff`). Its PC-relative pointer still locates `.eh_frame`. The rewriter treated the omitted count as an encoded integer.
+- **Fix:** `nso_code.py` follows that pointer and walks the raw CIE and FDE records when the search table is absent. The rewriter uses the shared reader for function boundaries, code ranges and exception landing pads. The raw scan skips discarded records that resolve to the encoded field itself, an unused module entry or an empty range.
+- **Found on:** [Night in the Woods](../../dm/games/0100921006A04000/README.md) 1.0.2 `main`.
+
 ### Code before the first unwind entry is one function
 
 - **Symptom:** `jump table <addr>` assertion on an ordinary byte table near the start of the text (`adr x18; ldrb w0,[x17,x16]; add x18,x18,x0,lsl #2; br x18`).

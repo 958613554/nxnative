@@ -281,6 +281,7 @@ COMPUTE_6000_3 = COMPUTE_2022_3.replace('int texDimension', 'int texDimension; i
     'vector<data:unsigned int>~ threadGroupSize', 'staticvector<data:unsigned int>~ threadGroupSize')
 # Unity 5.5.0f3 release tree (AssetRipper TypeTreeDumps). Lovers in a Dangerous
 # Spacetime 1.0.4 reports 5.5.0p1; all 69 Shader objects read to their exact ends.
+# Night in the Woods uses the same layout with a Unity 5.6.4p1 type hash. All 134 Shader objects read to their exact ends.
 SHADER_5_5 = '''SerializedTextureProperty: string m_DefaultName; int m_TexDim
 SerializedProperty: string m_Name; string m_Description; vector<data:string>~ m_Attributes; int m_Type; unsigned int m_Flags; float m_DefValue[0]; float m_DefValue[1]; float m_DefValue[2]; float m_DefValue[3]; SerializedTextureProperty m_DefTexture
 SerializedProperties: vector<data:SerializedProperty>~ m_Props
@@ -317,6 +318,7 @@ SHADER_2021_3 = SHADER_2021_2.replace('SerializedProgram: vector<data:Serialized
 
 CLASS_COMPUTE_SHADER = 72
 KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('4496e93f2179252104401c8dda0a1751')): ('Shader', SHADER_5_5),
+               (CLASS_SHADER, bytes.fromhex('a70f7abc6586fb35b3a0641aa81e9375')): ('Shader', SHADER_5_5),
                (CLASS_SHADER, bytes.fromhex('f0c184272a05e54447e36366ec4876a6')): ('Shader', SHADER_2021_3),
                (CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005')): ('Shader', SHADER_2022_3),
                (CLASS_SHADER, bytes.fromhex('d8236c9bd87d85edb203acf352348124')): ('Shader', SHADER_2021_2),

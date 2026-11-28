@@ -190,6 +190,7 @@ One row per profile; the notes are each profile's `README.md`. Entries marked pr
 | [Need for Speed: Hot Pursuit Remastered](010029B0118E8000/README.md) | `010029B0118E8000` | 1.0.3 | 10.4.1 | Criterion's engine (Stellar Entertainment port) | NVN | 60 fps target |
 | [NieR:Automata The End of YoRHa Edition](010056B015FE8000/README.md) | `010056B015FE8000` | 1.0.3 | 12.3.9 | PlatinumGames' engine | NVN | 60 fps target |
 | [NieR:Automata The End of YoRHa Edition, Asian release](0100B8E016F76000/README.md) | `0100B8E016F76000` | 1.0.3 | 12.3.9 | PlatinumGames' engine | NVN | 60 fps target |
+| [Night in the Woods](0100921006A04000/README.md) | `0100921006A04000` | 1.0.2 | 3.5.2 | Unity 5.6.4p1 IL2CPP, FMOD | NVN | — |
 | [Nintendo Switch 2 Welcome Tour](040057C02159A000/README.md) | `040057C02159A000` | v262144 (Switch 2) | 20.5.29 (Ounce) | NintendoWare Bezel Engine 2.16.0 | NVN2 | — |
 | [Nintendo Switch Sports Resort](04008E001F098000/README.md) | `04008E001F098000` | v65536 (Switch 2) | 22.2.10 (Ounce) | sead / agl / gsys, Havok | NVN2 | — |
 | [Oceanhorn: Monster of Uncharted Seas](01007D7001D0E000/README.md) | `01007D7001D0E000` | 1.0.1 | 3.7.0 | Cornfox & Bros.' engine | NVN | — |

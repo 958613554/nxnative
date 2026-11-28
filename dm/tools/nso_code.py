@@ -20,7 +20,9 @@ def eh_frame_hdr(img):
 def _read(img, o, enc, ehs):
     fmt, app = enc & 0xF, enc & 0x70
     if fmt == 0x1: v, end = _uleb(img, o); sz = end - o
+    elif fmt == 0x2: v, sz = struct.unpack_from('<H', img, o)[0], 2
     elif fmt == 0x3: v, sz = struct.unpack_from('<I', img, o)[0], 4
+    elif fmt == 0xA: v, sz = struct.unpack_from('<h', img, o)[0], 2
     elif fmt == 0xB: v, sz = struct.unpack_from('<i', img, o)[0], 4
     elif fmt in (0x0, 0x4): v, sz = struct.unpack_from('<Q', img, o)[0], 8
     elif fmt == 0xC: v, sz = struct.unpack_from('<q', img, o)[0], 8
@@ -37,13 +39,56 @@ def _uleb(img, o):
         if not b & 0x80: return r, o
 
 
+def _cie_encodings(img, cie, ehs):
+    ver = img[cie + 8]; p = cie + 9
+    aug = img[p:img.index(b'\0', p)]; p += len(aug) + 1
+    if ver >= 4: p += 2   # address size and segment selector size
+    _, p = _uleb(img, p)                                  # code alignment
+    while img[p] & 0x80: p += 1                           # data alignment (sleb)
+    p += 1
+    p = p + 1 if ver == 1 else _uleb(img, p)[1]           # return address register
+    enc, lenc = 0, None
+    if aug.startswith(b'z'):
+        _, p = _uleb(img, p)
+        for ch in aug[1:]:
+            if ch == ord('R'): enc = img[p]; p += 1
+            elif ch == ord('P'): pe = img[p]; p += 1; p += _read(img, p, pe, ehs)[1]
+            elif ch == ord('L'): lenc = img[p]; p += 1
+    return enc, lenc, aug.startswith(b'z') and b'P' in aug
+
+
+def _frame_entries(img, o, ehs):
+    """Read the CIE and FDE records until .eh_frame's zero terminator."""
+    cies, out = {}, []
+    entry_has_code = any(img[:4])
+    while o + 8 <= len(img):
+        length, cid = struct.unpack_from('<II', img, o)
+        end = o + 4 + length
+        if length < 4 or length == 0xFFFFFFFF or end > len(img): break
+        if cid == 0:
+            cies[o] = _cie_encodings(img, o, ehs)[0]
+        elif (enc := cies.get(o + 4 - cid)) is not None and enc != 0xFF:
+            field = o + 8
+            pc, size = _read(img, field, enc, ehs)
+            span, _ = _read(img, field + size, enc & 0xF, ehs)
+            # A discarded FDE can resolve to the field itself, to an unused module entry, or to an empty range.
+            if span > 0 and 0 <= pc < len(img) and pc != field and (pc or entry_has_code):
+                out.append((pc, o))
+        o = end
+    return out
+
+
 def fde_table(img):
-    """[(function start, FDE offset)] from the eh_frame_hdr binary search table; empty when the module has no valid eh_frame_hdr (New Super Mario Bros. U Deluxe: a 32-bit module)"""
+    """[(function start, FDE offset)] from the header's search table or the raw .eh_frame records."""
     ehs, ehe = eh_frame_hdr(img)
-    if ehe - ehs < 12 or img[ehs] != 1 or img[ehs + 3] in (0xFF, 0): return []
+    if ehs == ehe and ehs != struct.unpack_from('<I', img, 4)[0]:   # devkitA64 points both MOD0 fields directly at .eh_frame
+        return _frame_entries(img, ehs, ehs)
+    if ehe - ehs < 4 or img[ehs] != 1: return []
     _, penc, cenc, tenc = img[ehs:ehs + 4]
     o = ehs + 4
-    _, s = _read(img, o, penc, ehs); o += s
+    if cenc == 0xFF or tenc in (0xFF, 0):   # the search table may be omitted while the .eh_frame pointer is still present
+        return [] if penc == 0xFF else _frame_entries(img, _read(img, o, penc, ehs)[0], ehs)
+    if penc != 0xFF: _, s = _read(img, o, penc, ehs); o += s
     n, s = _read(img, o, cenc, ehs); o += s
     out = []
     for _ in range(n):
@@ -58,28 +103,12 @@ def fde_ranges(img):
     ehs, _ = eh_frame_hdr(img)
     cies = {}
 
-    def cie_encoding(cie):
-        if cie not in cies:
-            p = cie + 8; ver = img[p]; p += 1
-            aug = img[p:img.index(b'\0', p)]; p += len(aug) + 1
-            _, p = _uleb(img, p)                                  # code alignment
-            while img[p] & 0x80: p += 1                           # data alignment (sleb)
-            p += 1
-            p = p + 1 if ver == 1 else _uleb(img, p)[1]           # return address register
-            enc = 0
-            if aug.startswith(b'z'):
-                _, p = _uleb(img, p)
-                for ch in aug[1:]:
-                    if ch == ord('R'): enc = img[p]; p += 1
-                    elif ch == ord('P'): pe = img[p]; p += 1; p += _read(img, p, pe, ehs)[1]
-                    elif ch == ord('L'): p += 1
-            cies[cie] = enc
-        return cies[cie]
-
     out = []
     for _, f in fde_table(img):
         cptr = f + 4
-        enc = cie_encoding(cptr - struct.unpack_from('<I', img, cptr)[0])
+        cie = cptr - struct.unpack_from('<I', img, cptr)[0]
+        if cie not in cies: cies[cie] = _cie_encodings(img, cie, ehs)[0]
+        enc = cies[cie]
         st, s = _read(img, f + 8, enc, ehs)
         ln, _ = _read(img, f + 8 + s, enc & 0xF, ehs)
         out.append((st, st + ln))
@@ -93,29 +122,13 @@ def landing_pads(img):
     ehs, _ = eh_frame_hdr(img)
     cies, out = {}, {}
 
-    def cie(c):   # (FDE pointer encoding, LSDA encoding or None, augmented)
-        if c not in cies:
-            p = c + 8; ver = img[p]; p += 1
-            aug = img[p:img.index(b'\0', p)]; p += len(aug) + 1
-            _, p = _uleb(img, p)
-            while img[p] & 0x80: p += 1
-            p += 1
-            p = p + 1 if ver == 1 else _uleb(img, p)[1]
-            enc, lenc = 0, None
-            if aug.startswith(b'z'):
-                _, p = _uleb(img, p)
-                for ch in aug[1:]:
-                    if ch == ord('R'): enc = img[p]; p += 1
-                    elif ch == ord('P'): pe = img[p]; p += 1; p += _read(img, p, pe, ehs)[1]
-                    elif ch == ord('L'): lenc = img[p]; p += 1
-            cies[c] = (enc, lenc, aug.startswith(b'z') and b'P' in aug)
-        return cies[c]
-
     for _, f in fde_table(img):
         try:
             cptr = f + 4
-            enc, lenc, z = cie(cptr - struct.unpack_from('<I', img, cptr)[0])
-            if lenc is None or lenc == 0xFF or not z: continue
+            cie = cptr - struct.unpack_from('<I', img, cptr)[0]
+            if cie not in cies: cies[cie] = _cie_encodings(img, cie, ehs)
+            enc, lenc, has_personality = cies[cie]
+            if lenc is None or lenc == 0xFF or not has_personality: continue
             st, s = _read(img, f + 8, enc, ehs); p = f + 8 + s
             ln, s = _read(img, p, enc & 0xF, ehs); p += s
             _, p = _uleb(img, p)   # augmentation length
