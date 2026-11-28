@@ -75,6 +75,10 @@ static void drop_indexes(void) {   // the read-only folders' name indexes, built
     for (dir_index **slot = g_dir_index; slot < g_dir_index + DIR_INDEX_SLOTS; slot++)
         while (*slot) { dir_index *x = *slot; *slot = x->next; free(x->e); free(x->pool); free(x->path); free(x); }
 }
+static void create_empty_file(const char *path) {
+    FILE *f = fopen(path, "w");
+    if (!f || fclose(f)) { perror(path); exit(2); }
+}
 #define CHECK(c, text) do { checks++; int ok = !!(c); fails += !ok; printf("%s %s\n", ok ? "PASS" : "FAIL", text); } while (0)
 
 int main(void) {
@@ -87,6 +91,10 @@ int main(void) {
     if (!f) { perror("fopen"); rmdir(root); return 2; }
     fputs("hello", f); fclose(f);
     CHECK(mount("test", root, 0) == RES_OK, "mount the synthetic folder");
+
+    uint64_t invalid = 0x1234;
+    CHECK(h_fs_OpenDirectory(&invalid, NULL, DIRMODE_FILE) == RES_FAIL && invalid == 0x1234,
+          "a null path fails without publishing a directory handle");
 
     const uint64_t initial[] = {0, 0x1234};
     for (size_t i = 0; i < sizeof initial / sizeof initial[0]; i++) {
@@ -128,9 +136,9 @@ int main(void) {
     mkdir(ro, 0755); mkdir(w, 0755); mkdir(sub, 0755); mkdir(ov, 0755);
     const char *three[] = {"a", "b", "c"};
     for (int i = 0; i < 3; i++) {
-        snprintf(q, sizeof q, "%s/%s", ro, three[i]); fclose(fopen(q, "w"));
-        snprintf(q, sizeof q, "%s/%s", sub, three[i]); fclose(fopen(q, "w"));
-        snprintf(q, sizeof q, "%s/o%s", ov, three[i]); fclose(fopen(q, "w"));
+        snprintf(q, sizeof q, "%s/%s", ro, three[i]); create_empty_file(q);
+        snprintf(q, sizeof q, "%s/%s", sub, three[i]); create_empty_file(q);
+        snprintf(q, sizeof q, "%s/o%s", ov, three[i]); create_empty_file(q);
     }
     CHECK(mount("ro", ro, 1) == RES_OK && mount("w", w, 0) == RES_OK && mount("ov", root, 1) == RES_OK, "mount a read-only folder, a writable one and one with an overlay");
     strlcpy(g_mnt[g_nmnt - 1].overlay, ov, sizeof g_mnt[0].overlay);
@@ -167,8 +175,8 @@ int main(void) {
     // A name in several layers is listed once, as the first layer has it; the layers come in their order (the last overlay folder first), and names differing in case are two
     char ov2[1100]; snprintf(ov2, sizeof ov2, "%s.ov2", root); mkdir(ov2, 0755);
     snprintf(q, sizeof q, "%s/entry", ov); FILE *g = fopen(q, "w"); fputs("overlay!", g); fclose(g);
-    snprintf(q, sizeof q, "%s/ENTRY", ov2); fclose(fopen(q, "w"));
-    snprintf(q, sizeof q, "%s/oa", ov2); fclose(fopen(q, "w"));
+    snprintf(q, sizeof q, "%s/ENTRY", ov2); create_empty_file(q);
+    snprintf(q, sizeof q, "%s/oa", ov2); create_empty_file(q);
     snprintf(g_mnt[g_nmnt - 1].overlay, sizeof g_mnt[0].overlay, "%s:%s", ov, ov2);
     drop_indexes();   // a read-only folder's index is kept for the run: the folder just changed, which a game's never does
     dh = 0; count = 0; int once = 0, upper = 0, big = 0;

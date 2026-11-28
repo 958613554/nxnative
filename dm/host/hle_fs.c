@@ -1626,10 +1626,11 @@ done:
     errno = err; return err ? -1 : 0;
 }
 HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3)", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) { dm_thread_service_request();
+    if (!path) { errno = EINVAL; return RES_FAIL; }
     Result (*sdk_open)(uint64_t *, const char *, int) = sdk_path_call(path, "_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci");
     if (sdk_open) return sdk_opened(sdk_open(out, path, mode), out, "_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE");
     char fwd[1024], normed[1024], norm_path[1024];
-    const char *p = fwd_slashes(path, fwd, sizeof fwd), *c = p ? strchr(p, ':') : NULL, *rest = NULL, *open_path = p;
+    const char *p = fwd_slashes(path, fwd, sizeof fwd), *c = strchr(p, ':'), *rest = NULL, *open_path = p;
     if (c) {
         rest = normalize_rest(c + 1, normed, sizeof normed);
         if (!rest) return err_res("opendir", path);
