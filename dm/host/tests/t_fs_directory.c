@@ -214,6 +214,85 @@ int main(void) {
         unlink(ip);
     }
 
+    // Normalized overlay directory paths (folder base and RomFS image base): .., backslash spelling, above-root rejection, and image-only cursor path
+    {
+        char nbase[1100], nbase_a[1200], nov[1100], nov_a[1200], nimg[1200], np[1300];
+        snprintf(nbase, sizeof nbase, "%s.nbase", root); snprintf(nbase_a, sizeof nbase_a, "%s/assets", nbase);
+        snprintf(nov, sizeof nov, "%s.nov", root); snprintf(nov_a, sizeof nov_a, "%s/assets", nov);
+        mkdir(nbase, 0755); mkdir(nbase_a, 0755); mkdir(nov, 0755); mkdir(nov_a, 0755);
+        snprintf(np, sizeof np, "%s/base.txt", nbase_a); FILE *bf = fopen(np, "w"); fputs("base", bf); fclose(bf);
+        snprintf(np, sizeof np, "%s/over.txt", nov_a); FILE *of = fopen(np, "w"); fputs("overlay", of); fclose(of);
+
+        // Synthetic image with /assets/base.txt (4 bytes) and image-only /plain/only.txt (3 bytes)
+        snprintf(nimg, sizeof nimg, "%s.nimg", root);
+        const char names[] = "assetsplainbase.txtonly.txt";
+        img_ent ent[5] = {
+            {1, 2, 0, 0, 0, 0},     // 0: root -> children 1..2 (assets, plain)
+            {3, 1, 0, 6, 0, 0},     // 1: assets -> child 3 (base.txt)
+            {4, 1, 6, 5, 0, 0},     // 2: plain -> child 4 (only.txt)
+            {32, 4, 11, 8, 1, 0},   // 3: base.txt ("base")
+            {36, 3, 19, 8, 1, 0},   // 4: only.txt ("img")
+        };
+        const char payload[] = "baseimg";
+        uint64_t hd[3] = {32 + 7, sizeof ent + (sizeof names - 1), 5};
+        FILE *im = fopen(nimg, "wb");
+        fwrite("DMROMFS1", 1, 8, im); fwrite(hd, 1, sizeof hd, im); fwrite(payload, 1, 7, im);
+        fwrite(ent, 1, sizeof ent, im); fwrite(names, 1, sizeof names - 1, im); fclose(im);
+
+        setenv("DM_ROMFS_OVERLAY", nov, 1);
+        setenv("DM_ROMFS", nbase, 1);
+        CHECK(h_fs_MountRom("rom_dir", NULL, 0) == RES_OK, "MountRom folder base with DM_ROMFS_OVERLAY");
+        setenv("DM_ROMFS", nimg, 1);
+        CHECK(h_fs_MountRom("rom_img", NULL, 0) == RES_OK, "MountRom image base with DM_ROMFS_OVERLAY");
+        unsetenv("DM_ROMFS"); unsetenv("DM_ROMFS_OVERLAY");
+
+        const char *mnts[] = {"rom_dir", "rom_img"};
+        for (int m = 0; m < 2; m++) {
+            char p0[64], p1[64], p2[64], pbad[64];
+            snprintf(p0, sizeof p0, "%s:/assets", mnts[m]);
+            snprintf(p1, sizeof p1, "%s:/assets/../assets", mnts[m]);
+            snprintf(p2, sizeof p2, "%s:\\assets\\..\\assets", mnts[m]);
+            snprintf(pbad, sizeof pbad, "%s:/assets/../..", mnts[m]);
+
+            DirectoryEntry ref[4], alt[4]; int64_t rcnt = -1, rdc = -1, acnt = -1, adc = -1;
+            uint64_t rh = 0;
+            CHECK(h_fs_OpenDirectory(&rh, p0, DIRMODE_DIR | DIRMODE_FILE) == RES_OK &&
+                  h_fs_DirCount(&rdc, rh) == RES_OK && h_fs_ReadDirectory(&rcnt, ref, rh, 4) == RES_OK &&
+                  rdc == 2 && rcnt == 2, m ? "image overlay /assets enumerates base and overlay entries" : "folder overlay /assets enumerates base and overlay entries");
+            if (rh) h_fs_CloseDirectory(rh);
+
+            const char *spellings[] = {p1, p2};
+            for (int s = 0; s < 2; s++) {
+                uint64_t ah = 0; acnt = -1; adc = -1;
+                CHECK(h_fs_OpenDirectory(&ah, spellings[s], DIRMODE_DIR | DIRMODE_FILE) == RES_OK &&
+                      h_fs_DirCount(&adc, ah) == RES_OK && h_fs_ReadDirectory(&acnt, alt, ah, 4) == RES_OK,
+                      s ? "backslash parent-normalized overlay path opens, counts, and reads" : "parent-normalized overlay path opens, counts, and reads");
+                int same = adc == rdc && acnt == rcnt;
+                for (int64_t i = 0; same && i < rcnt; i++)
+                    same = !strcmp(ref[i].name, alt[i].name) && ref[i].type == alt[i].type && ref[i].size == alt[i].size;
+                CHECK(same, s ? "backslash parent-normalized overlay matches /assets in names, types, sizes, and count" : "parent-normalized overlay matches /assets in names, types, sizes, and count");
+                if (ah) h_fs_CloseDirectory(ah);
+            }
+            uint64_t badh = 0x4321;
+            CHECK(h_fs_OpenDirectory(&badh, pbad, DIRMODE_DIR | DIRMODE_FILE) == RES_PATH_NOT_FOUND && badh == 0x4321,
+                  m ? "image overlay path above mount root is rejected" : "folder overlay path above mount root is rejected");
+        }
+
+        // Image-only directory on an overlay-mounted image still uses the direct cursor path (no snapshot allocation)
+        calloc_calls = 0; calloc_bytes = 0;
+        uint64_t ph = 0; DirectoryEntry pent[2]; int64_t pcnt = -1;
+        CHECK(h_fs_OpenDirectory(&ph, "rom_img:/plain/../plain", DIRMODE_FILE) == RES_OK &&
+              calloc_calls == 1 && calloc_bytes == sizeof(dirh_t) &&
+              h_fs_ReadDirectory(&pcnt, pent, ph, 2) == RES_OK && pcnt == 1 &&
+              !strcmp(pent[0].name, "only.txt") && pent[0].size == 3,
+              "image-only normalized path keeps cursor path without snapshot allocation");
+        if (ph) h_fs_CloseDirectory(ph);
+
+        unlink(nimg);
+        snprintf(np, sizeof np, "%s/base.txt", nbase_a); unlink(np); rmdir(nbase_a); rmdir(nbase);
+        snprintf(np, sizeof np, "%s/over.txt", nov_a); unlink(np); rmdir(nov_a); rmdir(nov);
+    }
+
     fail_reading(sub, 1);
     CHECK(h_fs_CleanDirRec("w:/sub") != RES_OK, "a clean whose folder cannot be read fails");
     CHECK(h_fs_CleanDirRec("w:/sub") == RES_OK && rmdir(sub) == 0, "then it empties the folder");

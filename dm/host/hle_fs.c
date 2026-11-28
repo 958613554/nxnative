@@ -167,6 +167,7 @@ static const char *fwd_slashes(const char *p, char *buf, size_t n) {
     buf[i] = 0; return buf;
 }
 static int norm_rest(const char *rest, char *out, size_t n);
+static const char *normalize_rest(const char *rest, char *out, size_t n);
 static int rom_overlay_path(const mount_t *m, const char *rest, char *out, size_t n);
 // A path on an image mount: returns 1 with the mount in *mi and the entry in *k (-1 with errno set when there is none); 0 for a path on any other mount, or one an overlay folder (DM_ROMFS_OVERLAY) has, which then opens as a host file
 static int img_path(const char *p, int *mi, int64_t *k) {
@@ -175,8 +176,8 @@ static int img_path(const char *p, int *mi, int64_t *k) {
     for (int i = 0; i < g_nmnt; i++) {
         if (!mnt_is(&g_mnt[i], p, ln)) continue;
         if (!g_mnt[i].img) return 0;
-        char normed[1024]; const char *rest = c + 1; *mi = i;
-        if (strstr(rest, "/.")) { if (!norm_rest(rest, normed, sizeof normed)) { *k = -1; return 1; } rest = normed; }
+        char normed[1024]; const char *rest = normalize_rest(c + 1, normed, sizeof normed); *mi = i;
+        if (!rest) { *k = -1; return 1; }
         char ov[1024]; if (g_mnt[i].overlay[0] && rom_overlay_path(&g_mnt[i], rest, ov, sizeof ov)) return 0;
         *k = img_find(g_mnt[i].img, rest); return 1;
     }
@@ -435,6 +436,12 @@ static int norm_rest(const char *rest, char *out, size_t n) {
     }
     return 1;
 }
+// Normalize a forward-slash guest path suffix after ':': returns rest unchanged when it has no dot components, out when normalized, or NULL with errno set on error.
+static const char *normalize_rest(const char *rest, char *out, size_t n) {
+    if (!strstr(rest, "/.") && strcmp(rest, ".") && strcmp(rest, "..") && strncmp(rest, "./", 2) && strncmp(rest, "../", 3))
+        return rest;
+    return norm_rest(rest, out, n) ? out : NULL;
+}
 // create only allows the last component to not exist yet; intermediate directories still need an exact match.
 static int host_path_ex(const char *p, char *out, size_t n, int *ro, int create) {
     char fwd[1024]; p = fwd_slashes(p, fwd, sizeof fwd); const char *c = strchr(p, ':');
@@ -443,8 +450,8 @@ static int host_path_ex(const char *p, char *out, size_t n, int *ro, int create)
     for (int i = 0; i < g_nmnt; i++) {
         if (!mnt_is(&g_mnt[i], p, ln)) continue;
         if (ro) *ro = g_mnt[i].ro;
-        char normed[1024]; const char *rest = c + 1;
-        if (strstr(rest, "/.")) { if (!norm_rest(rest, normed, sizeof normed)) return 0; rest = normed; }   // only paths with "." components are normalized; the rest walk component by component as before
+        char normed[1024]; const char *rest = normalize_rest(c + 1, normed, sizeof normed);
+        if (!rest) return 0;
         if (g_mnt[i].overlay[0] && !create) return rom_overlay_path(&g_mnt[i], rest, out, n);
         strlcpy(out, g_mnt[i].dir, n);
         while (*rest) {
@@ -1534,9 +1541,8 @@ static size_t names_first(char (*names)[0x301], size_t n) {
     free(again); free(by);
     return m;
 }
-// 0, or -1 with errno set when a folder of the overlay cannot be read: nothing is kept
+// 0, or -1 with errno set when a folder of the overlay cannot be read: nothing is kept. rest is already forward-slash and parent-normalized.
 static int dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
-    char fwd[1024]; rest = fwd_slashes(rest, fwd, sizeof fwd);
     char *roots = strdup(m->overlay);
     size_t cap = 2048; char (*names)[0x301] = malloc(cap * sizeof *names);
     const char **all = calloc(65, sizeof *all);
@@ -1583,24 +1589,35 @@ done:
 HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3)", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) { dm_thread_service_request();
     Result (*sdk_open)(uint64_t *, const char *, int) = sdk_path_call(path, "_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci");
     if (sdk_open) return sdk_opened(sdk_open(out, path, mode), out, "_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE");
+    char fwd[1024], normed[1024], norm_path[1024];
+    const char *p = fwd_slashes(path, fwd, sizeof fwd), *c = p ? strchr(p, ':') : NULL, *rest = NULL, *open_path = p;
+    if (c) {
+        rest = normalize_rest(c + 1, normed, sizeof normed);
+        if (!rest) return err_res("opendir", path);
+        if (rest != c + 1) {
+            if (snprintf(norm_path, sizeof norm_path, "%.*s:%s", (int)(c - p), p, rest) >= (int)sizeof norm_path) {
+                errno = ENAMETOOLONG; return err_res("opendir", path);
+            }
+            open_path = norm_path;
+        }
+    }
     int mi; int64_t k;
-    if (img_path(path, &mi, &k)) {   // an image directory: its children are one immutable run in the image index, streamed by cursor without allocating a snapshot
+    if (img_path(open_path, &mi, &k)) {   // an image directory: its children are one immutable run in the image index, streamed by cursor without allocating a snapshot
         if (k >= 0 && g_mnt[mi].img->e[k].type) errno = ENOTDIR, k = -1;
         if (k < 0) return err_res("opendir", path);
         const romfs_img *m = g_mnt[mi].img; const img_ent *x = &m->e[k];
         dirh_t *h = calloc(1, sizeof *h);
         if (!h) return err_res("directory allocation", path);
-        h->img = m; h->img_first = x->a; h->img_count = x->b; h->mode = mode; strlcpy(h->path, path, sizeof h->path);
+        h->img = m; h->img_first = x->a; h->img_count = x->b; h->mode = mode; strlcpy(h->path, open_path, sizeof h->path);
         *out = (uint64_t)h; return RES_OK;
     }
-    HP(path); DIR *d = opendir(hp);
+    HP(open_path); DIR *d = opendir(hp);
     if (!d) return err_res("opendir", hp);
     dirh_t *h = calloc(1, sizeof *h);
     if (!h) { int e = errno; closedir(d); errno = e; return err_res("directory allocation", hp); }
     h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;
-    const char *c = strchr(path, ':');
-    if (c) for (int i = 0; i < g_nmnt; i++) if (g_mnt[i].overlay[0] && mnt_is(&g_mnt[i], path, (size_t)(c - path))) {
-        if (dir_snapshot(h, &g_mnt[i], c + 1)) { int err = errno; closedir(d); free(h); errno = err; return err_res("opendir", hp); }
+    if (c) for (int i = 0; i < g_nmnt; i++) if (g_mnt[i].overlay[0] && mnt_is(&g_mnt[i], p, (size_t)(c - p))) {
+        if (dir_snapshot(h, &g_mnt[i], rest)) { int err = errno; closedir(d); free(h); errno = err; return err_res("opendir", hp); }
         break;
     }
     *out = (uint64_t)h; return RES_OK;
