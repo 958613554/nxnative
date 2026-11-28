@@ -48,6 +48,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `game` | unused 272-byte slot pool: 4,194,304 → 65,536 slots | address space | gap | judgement | 1 | [Mario + Rabbids® Sparks of Hope](../../dm/games/0100317013770000/README.md) | Sparks of Hope's own init (Kingdom Battle has none) |
 | `build` → `engine` | Criterion's 60 fps mode, frame ticks and game step at fixed addresses | frame rate | blocked: one game on that engine here | judgement | 1 | [Need For Speed™ Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md) | the studio's engine, which its other games ship |
 | `build` → `engine` | Next Level Games' frame limiter target at a fixed address | frame rate | blocked: one game on that engine here | judgement | 1 | [Luigi's Mansion 3](../../dm/games/0100DCA0064A6000/README.md) | the studio's engine, which its other games ship |
+| `build` → `engine` | Publish shader-cache references after initialization | race | blocked: the Switch 2 executable offsets are verified only for v262144 | checked: v262144 Mac builds: engine record read before publication, original SDK shader-control access, and all loader return paths verified | 1 | [Cyberpunk 2077](../../dm/games/0400DDB020648000/README.md) | REDengine publishes a positive reference count while the shader record is still being filled. A second worker can acquire the half-initialized record. |
 | `build` → `engine` | RE Engine's frame limit at a fixed pointer | frame rate | blocked: Rise has not been verified with the engine matcher that finds Apollo Justice | judgement | 1 | [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md) | engine code other RE Engine games ship |
 | `build` → `engine` | Unity's constant-buffer table locked on the shared device | race | blocked: the stubs have no function-matched form yet, and no other Unity 2018.4 main on the drive shares these functions (Ori and the Blind Forest 1.0.2: no fingerprint match) | checked: probes of both threads inserting the same key and of the table API's callers by thread; Blind Forest main compared with nso_fnmap | 1 | [Ori and the Will of the Wisps](../../dm/games/01008DD013200000/README.md) | Unity 2018.4's threaded GfxDevice: the main thread registers layouts on the real device while the render thread uses the same table; any Unity 2018.4 build with this code has the race |
 | `build` → `game` | 60 fps frame step on 1.3.0 (the same stub at its known addresses) | frame rate | blocked: 1.3.0's main is on neither drive to fingerprint (v458752 is the update on them) | judgement | 1 | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the stub above, placed at 1.3.0's addresses: the matched rule would serve it once its functions are fingerprinted |
@@ -69,6 +70,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [ASTRAL CHAIN](#astral-chain) | 0 | 0 | 112 | 0 | 0 | `build` → `game` |
 | [Batman: Arkham Knight](#batman-arkham-knight) | 8 | 0 | 0 | 0 | 1 | `build` → `game` ×2 |
 | [Catherine: Full Body](#catherine-full-body) | 0 | 0 | 0 | 1 | 0 | `game` |
+| [Cyberpunk 2077](#cyberpunk-2077) | 0 | 0 | 4 | 0 | 0 | `build` → `engine` |
 | [DARK SOULS: REMASTERED](#dark-souls-remastered) | 2 | 0 | 4 | 0 | 0 | `build` → `game`, `game` |
 | [Diablo II: Resurrected](#diablo-ii-resurrected) | 2 | 0 | 0 | 1 | 0 | `game` |
 | [Digimon Story Time Stranger](#digimon-story-time-stranger) | 0 | 0 | 0 | 2 | 0 | `game` |
@@ -290,6 +292,18 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 - **`game`**, frame rate, at goal, checked: 1.0.1a startup, tick callback and timing getter verified by disassembly: Catherine 60 fps startup and simulation. GFD already accepts 60 at startup, but the title also selects its own fixed steps. Both sites must match together; no SDK or host setting selects the title’s timing mode.
 
 - **function-matched** (`main` of builds without CUTS): Catherine 60 fps startup and simulation: 2 functions, 2 cuts
+
+### Cyberpunk 2077
+
+[Cyberpunk 2077](../../dm/games/0400DDB020648000/README.md), `0400DDB020648000`, [patches.py](../../dm/games/0400DDB020648000/patches.py).
+
+- **`build` → `engine`**, race, blocked: the Switch 2 executable offsets are verified only for v262144, checked: v262144 Mac builds: engine record read before publication, original SDK shader-control access, and all loader return paths verified: Publish shader-cache references after initialization. REDengine publishes a positive reference count while the shader record is still being filled. A second worker can acquire the half-initialized record.
+
+- **v262144 `main`** `afd670b6…` ([patches.py:39](../../dm/games/0400DDB020648000/patches.py#L39))
+  - stub `+0x84dd30`: shader cache: keep reserved entry private
+  - stub `+0x84ded8`: shader cache: publish after fast load
+  - stub `+0x84dfe4`: shader cache: publish after metadata load
+  - stub `+0x84e154`: shader cache: publish after compute program initialization
 
 ### DARK SOULS: REMASTERED
 

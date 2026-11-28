@@ -1,0 +1,41 @@
+# Cyberpunk 2077 (Switch 2): update v262144, SDK 20.5.3 (Ounce), NVN2; CD PROJEKT RED's REDengine 4 with Wwise. See README.md
+
+# ---- Identity ----
+title_id	0400DDB020648000
+program_id	0400DDB020648000
+
+# ---- App ----
+name	Cyberpunk 2077
+ipa	Cyberpunk2077.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+# the display version is not in the dump; the update's version stands in for it
+build	v262144	v262144	main=afd670b6ba27b9e68d268e601bf91acd	sdk=9991a23dba542324e4c5473e4fb07f15
+package	v262144
+shader_versions	v262144
+
+# ---- Files ----
+# not loaded, main takes nothing from them the host does not supply: subsdk0 (C / libc), subsdk1 (C / libc)
+modules	main sdk
+romfs_marker	archive/emporium/ep1/ep1_3_nightcity_gi.archive
+zip_store	.archive:.bin:.cache:.nro:.redscripts:.metallib
+
+# ---- Memory ----
+# the NPDM declares 64 MB of system resource (virtual address memory) and main never sets a heap: a 5 GB block with a 4.375 GB alias region, where the game maps its memory itself (Mac uses the Switch 2 128 GB reservation)
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+# the sdk is built for the Switch 2 (spec: Ounce): its 9 GB pool
+app_pool	0x240000000
+# the NPDM declares 64 MB of system resource
+sys_resource	0x4000000
+
+# ---- Shader split ----
+# REDengine 4: shader caches in /engine/shaderemporium_final.cache and /r6/cache/final.redscripts / shader caches (shader_split.py)
+shader_groups	/archive/=archive /engine/=engine /r6/=r6 /nro/=nro /.nrr/=nrr
+shader_note	Cyberpunk 2077 shaders
+
+# ---- Graphics ----
+# the game calls nvnDeviceSetDepthMode with near = 0
+depth_mode	zero
