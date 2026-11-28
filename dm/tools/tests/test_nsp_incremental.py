@@ -1712,7 +1712,7 @@ class DlcDecoderSources(unittest.TestCase):
             aoc = work / 'aoc'; aoc.mkdir(parents=True)
             dlc_setup(aoc)
             said, captured = [], {}
-            def fake_extract(ex, ver, src, app):
+            def fake_extract(ex, ver, src, app, total=None):
                 d = ex / ver; (d / 'ExeFS').mkdir(parents=True, exist_ok=True); (d / 'RomFS').mkdir(exist_ok=True)
                 nso(d / 'ExeFS/main', BID); return d
             def fake_split(*a, **k):

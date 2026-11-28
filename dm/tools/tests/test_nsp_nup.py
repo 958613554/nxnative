@@ -899,6 +899,35 @@ class Programs(Base):
                 pack_nup.pack_version(fam['nup'], fam['base'], fam['base'], got, ex_dir, say=lambda s: None)
                 self.assertTrue((romfs.Path(ex_dir / 'RomFS.img') / marker).exists())
 
+    def test_preflight_nup_romfs_bytes_reused_for_progress(self):
+        write_nup(self.path, edition(s1_updates=[(VER, 's1new')]))
+        got, fam = nsp.scan_nup(self.path); n = fam['nup']; self.addCleanup(n.close)
+        real_romfs_bytes, calls, stages = pack_nup.romfs_bytes, [], []
+        def counting_bytes(nup_obj, k, base):
+            val = real_romfs_bytes(nup_obj, k, base)
+            calls.append((k.name, val))
+            return val
+        class Stop(Exception): pass
+        prog = mock.Mock(stage=mock.Mock(side_effect=lambda title, **kw: stages.append((title, kw.get('total')))))
+        args = nsp.parse_args([str(self.path), '--platform', 'mac'])
+        prof = mock.Mock(id=f'{S2:016X}', builds=lambda: {'v0': {}}, versions=lambda: ['v0'],
+                         shader_versions=lambda: ['v0'],
+                         words=lambda k, d='': ['main'] if k == 'modules' else [],
+                         get=lambda k, d='': 'Game.ipa' if k == 'ipa' else d,
+                         table=lambda n: self.dir / 'missing.tsv')
+        gm = mock.Mock(load=lambda tid: prof if tid == f'{S2:016X}' else None, by_title=lambda *a, **k: prof, by_build=lambda *a, **k: None)
+        with mock.patch.dict(sys.modules, {'game': gm}), \
+             mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'WORK_DIR', ''), \
+             mock.patch.object(nsp, 'PROD_KEYS', ''), mock.patch.object(nsp, 'apple_silicon', return_value=True), \
+             mock.patch.object(nsp, 'check_prereqs'), mock.patch.object(nsp, 'free_gb', return_value=100.0), \
+             mock.patch.object(nsp, 'find_nx_extract', return_value=Path('/bin/true')), \
+             mock.patch.object(pack_nup, 'romfs_bytes', side_effect=counting_bytes), \
+             mock.patch.object(nsp, 'PROG', prog), mock.patch.object(nsp, 'check_formats', side_effect=Stop()), \
+             mock.patch.object(nsp, 'say'), mock.patch.object(nsp, 'ask', side_effect=AssertionError('asked')):
+            with self.assertRaises(Stop): nsp.main(args)
+        self.assertEqual(calls, [(fam['base'].name, 3 + 400 + 2)])   # combined multi-program size computed once
+        self.assertEqual(stages, [('unpack v0', 3 + 400 + 2)])
+
     def test_reused_provisional_profile_reconciles_stale_sibling_marker(self):
         # Retrying a multi-program NUP with a provisional profile created before 2cc4cda2 must replace
         # the stale sibling romfs_marker while preserving hand-edited settings and comments.

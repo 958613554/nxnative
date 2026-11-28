@@ -1,5 +1,6 @@
 """NSP script with a dump folder (scripts/pack_dump.py): the folder's layout is read and packed into what the script's later steps read, and the script asks for no keys.
 The run stops at the prerequisite check; no game files, keys or Xcode needed."""
+import collections
 import importlib.util
 import os
 from pathlib import Path
@@ -359,7 +360,7 @@ class Main(Base):
             args = nsp.parse_args([str(self.dump), '--platform', 'mac-app', '-o', str(out_app), *opts])
             if in_programs is not None: args.in_programs = in_programs
             said, game_events, kept_calls = [], [], []
-            def fake_extract(ex, ver, src, app):
+            def fake_extract(ex, ver, src, app, total=None):
                 d = ex / ver; (d / 'ExeFS').mkdir(parents=True, exist_ok=True); (d / 'RomFS').mkdir(exist_ok=True)
                 if game_icon: (d / 'icon.jpg').write_bytes(b'game-jpg')
                 else: (d / 'icon.jpg').unlink(missing_ok=True)
@@ -417,7 +418,7 @@ class Main(Base):
         out_app = self.dump.parent / 'Game.app'
         seen = []
         args = nsp.parse_args([str(self.dump), '--platform', 'mac-app', '-o', str(out_app)])
-        def fake_extract(ex, ver, src, app):
+        def fake_extract(ex, ver, src, app, total=None):
             d = ex / ver; (d / 'ExeFS').mkdir(parents=True, exist_ok=True); (d / 'RomFS').mkdir(exist_ok=True)
             title = 'Update Edition Name' if ver == f'v{VER}' else 'Base Name'
             (d / 'control.nacp').write_bytes(make_nacp(title, '1.2.1' if ver == f'v{VER}' else '1.0.0'))
@@ -489,6 +490,68 @@ class Survey(Base):
             shutil.rmtree(d / f'updates/{VER}/exefs'); seen.clear()
             self.assertEqual(nsp.same_build(d, app, fam, None, REPO, {}), (prof, 'v0', 'ab' * 16))
             self.assertEqual(seen, ['ab' * 16])
+
+    def test_preflight_romfs_size_reused_for_extract_progress_and_low_space_refused(self):
+        d = self.dump.parent / 'sized'; version(d / 'base', marker='a.bin'); version(d / f'updates/{VER}', marker='b.bin')
+        (d / f'updates/{VER}/romfs/big.bin').write_bytes(b'x' * 4096)
+        args = nsp.parse_args([str(d), '--platform', 'mac'])
+        real_tree_size, walked, stages = nsp.tree_size, [], []
+        def counting_tree_size(path):
+            walked.append(Path(path))
+            return real_tree_size(path)
+        def fake_stage(title, **kw): stages.append((title, kw.get('total')))
+        prog = mock.Mock(stage=mock.Mock(side_effect=fake_stage))
+        with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'WORK_DIR', ''), \
+             mock.patch.object(nsp, 'PROD_KEYS', ''), mock.patch.object(nsp, 'apple_silicon', return_value=True), \
+             mock.patch.object(nsp, 'check_prereqs'), mock.patch.object(nsp, 'free_gb', return_value=1.0), \
+             mock.patch.object(nsp, 'tree_size', side_effect=counting_tree_size), mock.patch.object(nsp, 'say'), \
+             mock.patch.object(nsp, 'ask', side_effect=AssertionError('asked')), \
+             self.assertRaisesRegex(nsp.BuildError, 'less than .* GB free'):
+            nsp.main(args)
+        self.assertEqual(len(walked), 1)   # only the selected version walked before low-space refusal
+        walked.clear(); stages.clear()
+        with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'WORK_DIR', ''), \
+             mock.patch.object(nsp, 'PROD_KEYS', ''), mock.patch.object(nsp, 'apple_silicon', return_value=True), \
+             mock.patch.object(nsp, 'check_prereqs'), mock.patch.object(nsp, 'free_gb', return_value=100.0), \
+             mock.patch.object(nsp, 'tree_size', side_effect=counting_tree_size), mock.patch.object(nsp, 'PROG', prog), \
+             mock.patch.object(nsp, 'check_formats', side_effect=Stop()), mock.patch.object(nsp, 'say'), \
+             mock.patch.object(nsp, 'ask', side_effect=AssertionError('asked')):
+            with self.assertRaises(Stop): nsp.main(args)
+        expected_romfs = d / f'updates/{VER}/romfs'
+        self.assertEqual(walked, [expected_romfs])   # preflight + extract_dump progress share one walk
+        self.assertEqual(stages, [(f'pack v{VER}', real_tree_size(expected_romfs)[1])])
+
+    def test_survey_queries_package_size_once_per_row(self):
+        d = self.dump.parent / 'survey_once'
+        version(d / 'base', tid=0x0400000000000000)
+        version(d / f'updates/{VER}', tid=0x0400000000000000)
+        dlc_lic = d / 'dlc' / f'{0x0400000000001001:016X}'; (dlc_lic / 'romfs').mkdir(parents=True)
+        (dlc_lic / 'romfs/ticket.bin').write_bytes(b'x' * 512)
+        dlc_big = d / 'dlc' / f'{0x0400000000001002:016X}'; (dlc_big / 'romfs').mkdir(parents=True)
+        (dlc_big / 'romfs/content.bin').write_bytes(b'y' * (2 * 1024 * 1024))
+        app, fam = nsp.scan_dump(d)
+        real_pkg_size, queried = nsp.package_size, []
+        def counting_pkg_size(f, k):
+            queried.append(k)
+            return real_pkg_size(f, k)
+        facts = {'mods': {'main': {'kind': 'main', 'bid': '00' * 16, 'sizes': (0, 0, 0), 'bss': 0, 'imports': {'nvnBootstrapLoader'}, 'exports': set()}},
+                 'romfs': {'n': 1, 'bytes': 4, 'tops': collections.Counter(), 'topb': collections.Counter(),
+                           'mags': collections.Counter(), 'magb': collections.Counter(), 'exts': collections.Counter()},
+                 'program': app, 'sysres': 0, 'sdkver': set(), 'comps': set(), 'unity': set(), 'markers': {}, 'glsl_src': 0, 'glslc': 0}
+        with mock.patch.object(nsp, 'package_size', side_effect=counting_pkg_size), \
+             mock.patch.object(nsp, 'check_aarch64'), mock.patch.object(nsp, 'say'), mock.patch.object(nsp, 'PROG', mock.Mock()), \
+             mock.patch.object(nsp.pg, 'facts_of', return_value=facts), mock.patch.object(nsp.pg, 'guess', return_value={'modules': ('main', '')}), \
+             mock.patch.object(nsp, 'run') as run_mock:
+            def fake_run(cmd, log, **kw): log.parent.mkdir(parents=True, exist_ok=True); log.write_text('ok\n')
+            run_mock.side_effect = fake_run
+            nsp.survey(d, app, fam, None, REPO, Path(sys.executable), {})
+        self.assertEqual(len(queried), 4)   # 1 base + 1 update + 2 DLC rows
+        text = (d / f'{app:016X}_survey/survey.md').read_text()
+        self.assertIn('- base: `base` (0.00 GB)', text)
+        self.assertIn(f'- update: `{VER}` (v{VER}, 0.00 GB) (used for this survey)', text)
+        self.assertIn('- DLC: `romfs` (0 KB, licence only, no content)', text)
+        self.assertIn('- DLC: `romfs` (2048 KB)', text)
+        self.assertNotIn('- DLC: `romfs` (2048 KB, licence only', text)
 
 
 if __name__ == '__main__':

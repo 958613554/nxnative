@@ -923,11 +923,19 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     title = nacp.name(ex / 'control.nacp') or (nsp_dir.name if dump else '')
     check_aarch64(ex / 'ExeFS', f'{title or "?"} ({app:016X})')
     F = pg.facts_of(ex / 'ExeFS', ex / 'romfs_manifest.tsv'); mods, rom = F['mods'], F['romfs']   # dm/games/profile_guess.py: what the code modules and the RomFS show
-    def size(k): return package_size(fam, k)[1] / 2**30
     R = [f'# Survey: {title or "?"} ({app:016X})', '', f'- display version: {dv or "?"}']
-    R += [f'- base: `{package_size(fam, fam["base"])[0]}` ({size(fam["base"]):.2f} GB)' if fam['base'] is not None else '- base: none (the update is the whole game)']
-    R += [f'- update: `{package_size(fam, p)[0]}` (v{v}, {size(p):.2f} GB){" (used for this survey)" if p is upd else ""}' for v, p in ups]
-    R += [f'- DLC: `{package_size(fam, p)[0]}` ({size(p) * 2**20:.0f} KB{", licence only, no content" if size(p) < 1 / 1024 else ""})' for _, _, p in fam['dlc']]
+    if fam['base'] is not None:
+        name, b = package_size(fam, fam['base'])
+        R.append(f'- base: `{name}` ({b / 2**30:.2f} GB)')
+    else:
+        R.append('- base: none (the update is the whole game)')
+    for v, p in ups:
+        name, b = package_size(fam, p)
+        R.append(f'- update: `{name}` (v{v}, {b / 2**30:.2f} GB){" (used for this survey)" if p is upd else ""}')
+    for _, _, p in fam['dlc']:
+        name, b = package_size(fam, p)
+        gb = b / 2**30
+        R.append(f'- DLC: `{name}` ({gb * 2**20:.0f} KB{", licence only, no content" if gb < 1 / 1024 else ""})')
 
     # Code modules
     R += ['', '## Code modules', '', '| module | what | build ID | text / ro / data (MB) | bss (MB) |', '|---|---|---|---|---|']
@@ -1520,13 +1528,13 @@ def scan_nup(path, want=None, program=None):
     return app, {'base': base, 'updates': sorted(vers.items()), 'dlc': [(tid, None, k) for tid, k in sorted(dlc.items())], 'nup': n}
 
 
-def extract_nup(ex, name, k, base, app, n):   # one version of a NUP (k: its base or an update package) into the layout extract makes; the code modules and the image are kept while unchanged
+def extract_nup(ex, name, k, base, app, n, total=None):   # one version of a NUP (k: its base or an update package) into the layout extract makes; the code modules and the image are kept while unchanged
     dst = ex / name; part = dst / 'RomFS.img.part'; rmtree(dst / 'extract.key')   # not nx_extract's output: an NSP build of this version extracts it again
     def poll():
         try: return {'done': part.stat().st_size}
         except OSError: return None
     try:
-        PROG.stage(f'unpack {name}', poll=poll, unit='B', total=pack_nup.romfs_bytes(n, k, base), est=True)
+        PROG.stage(f'unpack {name}', poll=poll, unit='B', total=pack_nup.romfs_bytes(n, k, base) if total is None else total, est=True)
         how = pack_nup.pack_version(n, k, base, app, dst, say=lambda s: None, step=lambda s: PROG.set(step=s), note=say)
     except pack_nup.Error as e: raise BuildError(str(e)) from e
     PROG.end(amount((dst / 'RomFS.img').stat().st_size, 'B') + {'kept': ', reused (inputs unchanged)', 'verified': ', reused (image checked)'}.get(how, ''))
@@ -1611,12 +1619,12 @@ def scan_dump(dump, want=None):   # a dump folder as scan_nsps gives a folder of
     return app, {'base': pack_dump.base_of(dump), 'updates': sorted(vers.items()), 'dlc': [(tid, None, roms) for tid, roms in dlc.items()], 'dump': True}
 
 
-def extract_dump(ex, name, src, app):   # one version of a dump folder (src: base/ or updates/<version>/) into the layout extract makes; the code modules and the image are kept while unchanged
+def extract_dump(ex, name, src, app, total=None):   # one version of a dump folder (src: base/ or updates/<version>/) into the layout extract makes; the code modules and the image are kept while unchanged
     dst = ex / name; part = dst / 'RomFS.img.part'; rmtree(dst / 'extract.key')   # not nx_extract's output: an NSP build of this version extracts it again
     def poll():
         try: return {'done': part.stat().st_size}
         except OSError: return None
-    PROG.stage(f'pack {name}', poll=poll, unit='B', total=tree_size(src / 'romfs')[1], est=True)
+    PROG.stage(f'pack {name}', poll=poll, unit='B', total=tree_size(src / 'romfs')[1] if total is None else total, est=True)
     try: pack_dump.pack_version(src, app, dst, say=lambda s: None)
     except pack_dump.Error as e: raise BuildError(str(e)) from e
     PROG.end(amount((dst / 'RomFS.img').stat().st_size, 'B'))
@@ -3923,7 +3931,9 @@ def _main(args, cleanup):
     nup_label = pack_nup.display_label(picks[pkg_ver][1] or picks[pkg_ver][0]) if nup else ''
 
     ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
-    gb = (sum(pack_nup.romfs_bytes(fam['nup'], u or b, b) for b, u in picks.values()) if nup else sum(tree_size((u or b) / 'romfs')[1] for b, u in picks.values()) if dump else extract_bytes(picks, False)) / 2**30 + 6   # every merged image is complete, including on APFS; shader cache + slack
+    romfs_sizes = ({ver: pack_nup.romfs_bytes(fam['nup'], u or b, b) for ver, (b, u) in picks.items()} if nup else
+                   {ver: tree_size((u or b) / 'romfs')[1] for ver, (b, u) in picks.items()} if dump else {})
+    gb = (sum(romfs_sizes.values()) if (nup or dump) else extract_bytes(picks, False)) / 2**30 + 6   # every merged image is complete, including on APFS; shader cache + slack
     if free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'less than {gb:.0f} GB free on the volume of {work}')
     heapck = provisional and HEAP_CHECK and not args.no_heap_check and not heap_checked(g)   # the heap check, when the game needs one (once per provisional profile: it stamps the profile)
     PROG.plan(len(versions) + bool(fam['dlc'] or aoc_dir) + 4 - (prepare_xcode or (mac and not mac_pack)))   # prepare Xcode (a Mac-only build: the Mac host) replaces app build + IPA pack with one stage (a Mac app: Mac host + Mac app)
@@ -3931,7 +3941,9 @@ def _main(args, cleanup):
     dirs = {}
     for ver in versions:   # each merged version streams directly into its own image
         b, u = picks[ver]
-        dirs[ver] = extract_nup(ex, ver, u or b, b, app, fam['nup']) if nup else extract_dump(ex, ver, u or b, app) if dump else extract(nx, keys, ex, ver, b, u, logs, app, repo)
+        dirs[ver] = (extract_nup(ex, ver, u or b, b, app, fam['nup'], total=romfs_sizes[ver]) if nup else
+                     extract_dump(ex, ver, u or b, app, total=romfs_sizes[ver]) if dump else
+                     extract(nx, keys, ex, ver, b, u, logs, app, repo))
         if not nup and not dump: extract_html(nx, keys, dirs[ver], b, u, logs, app, repo)
     check_formats(dirs)
     check_versions_aarch64(dirs, logs, g, nacp.name(dirs[versions[0]] / 'control.nacp') or f'{app:016X}')   # before build_mismatch, derive_profile and build_sources read the modules
