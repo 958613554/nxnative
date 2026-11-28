@@ -442,6 +442,8 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "UE_FIXED_RATE_FIELD")) m->ue_fixed_field = (uint32_t)v;
         else if (!strcmp(key, "UE_FIXED_RATE_FLAG")) m->ue_fixed_flag = (uint32_t)v;
         else if (!strcmp(key, "UNITY_TARGET_FPS")) m->unity_target_fps = v;
+        else if (!strcmp(key, "UNITY_NVN_COUNT")) m->unity_nvn_count = (uint32_t)v;
+        else if (!strcmp(key, "UNITY_NVN_PERIOD")) m->unity_nvn_period = (uint32_t)v;
         else if (!strcmp(key, "UNITY_QS_PTR")) m->unity_qs_ptr = v;
         else if (!strcmp(key, "UNITY_QS_IDX")) m->unity_qs_idx = (uint32_t)v;
         else if (!strcmp(key, "UNITY_QS_ARR")) m->unity_qs_arr = (uint32_t)v;

@@ -35,3 +35,7 @@ shader_note	Graveyard Keeper 2 shaders
 # ---- Graphics ----
 # The game sets NVN's near plane to zero. Offline pipeline bases use the same depth mode.
 depth_mode	zero
+
+# ---- Frame rate ----
+# The rewriter finds the Unity NVN device's vblank timer. The host sets its count and duration with the presentation cap.
+fps_target	60

@@ -82,13 +82,43 @@ def image(funcs: dict, names=(unity_fps.TFR, OTHER, unity_fps.VSYNC), table=True
         img[s:s + len(name) + 1] = name.encode() + b'\0'
         rel.append((NAMES + 8 * i, s)); s += len(name) + 1
         if table: rel.append((NAMES + 8 * (len(names) + i), placed.get(name, 0x10)))
-    rel += [(slot, placed[name]) for slot, name in got]
+    rel += [(slot, placed[target] if isinstance(target, str) else target) for slot, target in got]
     struct.pack_into('<qQqQqQ', img, DYN, 7, RELA, 8, 24 * len(rel), 0, 0)
     for k, (off, val) in enumerate(rel): struct.pack_into('<QQq', img, RELA + 24 * k, off, 1027, val)   # R_AARCH64_RELATIVE
     return img
 
 
 def find(img): return unity_fps.find(bytes(img), TEXT, RO, DATA)
+
+
+NVN_COUNT, NVN_PERIOD, NVN_VTABLE = 0xaa10, 0xaa1c, 0xa300
+
+
+def nvn_setter(at, got=GOT, period=NVN_PERIOD):
+    return [ADRP(8, at, got), 0x7100043f, LDRX(8, 8, (got & 0xfff) // 8), 0x1a9f8421,
+            0xb9400109, 0x6b01013f, 0x540001a0, 0x1e220020, 0x52a84e09, 0x1e270121,
+            0xb9000101, ADRP(8, at + 44, period), ADDI(8, 8, period & 0xfff), 0x1e211800, 0xbd000100, RET]
+
+
+def nvn_wait(at, period=NVN_PERIOD):
+    return [0xb202e7e8, ADRP(22, at + 4, period), ADDI(22, 22, period & 0xfff), 0xf29999a8,
+            ADRP(21, at + 16, 0xab00), ADDI(21, 21, 0xb00), 0xf2e7fd88, 0x9e670109,
+            ADRP(20, at + 32, 0xac00), ADRP(19, at + 36, 0xad00), ADDI(19, 19, 0xd00), 0x1400000c,
+            0xbd4002c0, 0x1e22c000, 0xc8dffea8, 0x9e670101, 0xfd45c282, 0x1e623821, 0x1e690800, 0x1e602020, RET]
+
+
+def nvn_image(setter=nvn_setter, wait=nvn_wait, marker=True, duplicate=False):
+    funcs = {'nvn_set': setter, 'nvn_wait': wait}
+    got = [(GOT, NVN_COUNT), (NVN_VTABLE, 'nvn_set'), (NVN_VTABLE - 0x58, 'nvn_wait')]
+    if duplicate:
+        funcs.update(nvn_set2=lambda at: nvn_setter(at, GOT + 8, NVN_PERIOD + 4),
+                     nvn_wait2=lambda at: nvn_wait(at, NVN_PERIOD + 4))
+        got += [(GOT + 8, NVN_COUNT + 4), (NVN_VTABLE + 0x100, 'nvn_set2'), (NVN_VTABLE + 0xa8, 'nvn_wait2')]
+    img = image(funcs, names=(), got=got)
+    if marker:
+        name = b'GfxDeviceNvn.GPUEndFrameThread\0'
+        img[STRINGS:STRINGS + len(name)] = name
+    return img
 
 
 class FindTest(unittest.TestCase):
@@ -132,6 +162,21 @@ class FindTest(unittest.TestCase):
     def test_not_unity(self):
         out, why = find(image({}, names=('Foo::bar',)))
         self.assertEqual(out, {}, why)
+
+    def test_nvn_vblank_without_internal_call_table(self):
+        out, why = find(nvn_image())
+        self.assertEqual(out, {'nvn': (NVN_COUNT, NVN_PERIOD)}, why)
+
+    def test_nvn_vblank_requires_the_engine_and_matching_wait(self):
+        for img in (nvn_image(marker=False),
+                    nvn_image(wait=lambda at: nvn_wait(at, NVN_PERIOD + 4)),
+                    nvn_image(setter=lambda at: nvn_setter(at)[:13] + [RET, 0xbd000100])):
+            out, why = find(img)
+            self.assertNotIn('nvn', out, why)
+
+    def test_nvn_vblank_rejects_multiple_distinct_pairs(self):
+        out, why = find(nvn_image(duplicate=True))
+        self.assertNotIn('nvn', out, why)
 
 
 if __name__ == '__main__':

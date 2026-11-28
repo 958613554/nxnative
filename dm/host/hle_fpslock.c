@@ -48,7 +48,7 @@ static const lock_t k_locks[] = {
     { "799d1061182c1302e08e706b84ce76e5", "Criterion 3D game step", 0xeffc60, 0x50, SECS_F32, 1, 0 },
 };
 #define NLOCKS ((int)(sizeof k_locks / sizeof k_locks[0]))
-#define MAX_LOCKS (NLOCKS + 8)   // target, Monolith, four Unreal rows, Unity targetFrameRate, Frostbite frame regulator
+#define MAX_LOCKS (NLOCKS + 10)   // target, Monolith, four Unreal rows, three Unity rows, Frostbite frame regulator
 
 static int rd(uint64_t a, void *out, size_t n) { vm_size_t got = 0; return a >= 0x1000 && vm_read_overwrite(mach_task_self(), (vm_address_t)a, n, (vm_address_t)out, &got) == KERN_SUCCESS && got == n; }
 
@@ -276,7 +276,7 @@ static void unity_vsync_tick(int target, const char *src) {
     if (nlog < 8) { nlog++; LOG("main: Unity QualitySettings.vSyncCount (level %d) %u → %u vsyncs (%d fps; %s)", lvl, cur, want, target, src); }
 }
 // The running main's engine limiters, found once: by the first present (dm_fps_lock_tick) or by the graphics layer's present cap, which may ask first (dm_fps_lock_engine, from the acquire)
-static lock_t ue[4], target_lock, monolith_lock, unity_tfr, fb_reg_lock; static const lock_t *rows[MAX_LOCKS]; static int nrow, nier, ue_missing; static uint8_t *base; static uint32_t display;
+static lock_t ue[4], target_lock, monolith_lock, unity_tfr, unity_nvn[2], fb_reg_lock; static const lock_t *rows[MAX_LOCKS]; static int nrow, nier, ue_missing; static uint8_t *base; static uint32_t display;
 static pthread_once_t g_found = PTHREAD_ONCE_INIT;
 static void lock_find(void) {
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) {
@@ -294,6 +294,12 @@ static void lock_find(void) {
             int dup = 0; for (int r = 0; r < nrow; r++) dup |= !rows[r]->ptr_off && rows[r]->field == (uint32_t)g_mod[i].unity_target_fps;
             unity_tfr = (lock_t){ "", "Unity Application.targetFrameRate", 0, (uint32_t)g_mod[i].unity_target_fps, FPS_I32, 1, 0 };
             if (!dup) { rows[nrow++] = &unity_tfr; base = g_mod[i].base; }
+        }
+        if (g_mod[i].unity_nvn_count && g_mod[i].unity_nvn_period) {
+            // The NVN device caches both values in SetVSyncCount. The main thread uses the period to wait for the next vblank.
+            unity_nvn[0] = (lock_t){ "", "Unity NVN vSyncCount", 0, g_mod[i].unity_nvn_count, VSYNCS_I32, 1, 0 };
+            unity_nvn[1] = (lock_t){ "", "Unity NVN vblank wait", 0, g_mod[i].unity_nvn_period, SECS_F32, 1, 0 };
+            rows[nrow++] = &unity_nvn[0]; rows[nrow++] = &unity_nvn[1]; base = g_mod[i].base;
         }
         if (g_mod[i].unity_qs_ptr && g_mod[i].unity_qs_size) {
             uq.base = g_mod[i].base; uq.ptr = g_mod[i].unity_qs_ptr; uq.idx = g_mod[i].unity_qs_idx; uq.arr = g_mod[i].unity_qs_arr; uq.size = g_mod[i].unity_qs_size; uq.vsync = g_mod[i].unity_qs_vsync;

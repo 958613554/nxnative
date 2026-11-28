@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Unity's frame-rate settings, found in main through the engine's internal-call table, without a build ID: patch_nso.py writes their places into main's fixups and the host writes
-the profile's fps_target there (hle_fpslock.c).
+"""Unity's frame-rate settings, found from the engine's internal calls and NVN device methods. patch_nso.py records their locations in main's fixups, and hle_fpslock.c
+applies the profile's selected fps_target.
 IL2CPP registers the engine's internal calls from two parallel tables in main's data: one of name strings ("UnityEngine.Application::set_targetFrameRate"), and right after it one of
 the native functions, in the same order (relative relocations, so each entry is found through the module's relocations). Unity 2019.4 and 2017.4 register them from code instead,
 one call per name with the function in x1 and the name in x0 (icall_code). From the functions:
@@ -8,6 +8,8 @@ one call per name with the function in x1 and the name in x0 (icall_code). From 
 - QualitySettings.get_vSyncCount reads the current quality level's count: the QualitySettings object from a global (adrp; ldr xQ, [xP, #lo]) or from the engine's managers array
   (bl to mov w0, #K; b to adrp; add; ldr x0, [x8, w0, sxtw #3]: GetManagerFromContext(K)), the level index (ldrsw xI, [xQ, #IDX]), the levels (ldr xA, [xQ, #ARR]), the level
   (add xL, xA, xI, lsl #S, or mov wT, #SIZE; madd xL, xI, xT, xA), the count (ldr w0, [xL, #VSYNC]): UNITY_QS_PTR (the global), _IDX, _ARR, _SIZE, _VSYNC.
+- Unity's NVN device can also wait for its own vblank period. Its setter writes the integer count and count / 60.0 seconds, and its vblank method on the same vtable
+  compares elapsed time against 0.9 times that seconds field. The locator requires both method shapes and the engine's NVN thread name, independently of internal-call registration.
 Found on The Rogue Prince of Persia 1.1.0 (Unity 6000.0.64f1): targetFrameRate at main+0x8d33de8, vSyncCount at [[main+0x90957d8]+0x20] + [[main+0x90957d8]+0x64] * 0x100 + 0x88,
 which the game sets to 2 (present interval 2) and leaves targetFrameRate at -1. Checked on the Unity mains on the drives (2026-11-08): Donkey Kong Country Returns HD (6000.0.28f1)
 has the same layout; Super Mario RPG (2021.3.15f1) reaches QualitySettings through GetManagerFromContext(11) and has levels of 0xa8 bytes with the count at +0x68, its
@@ -15,7 +17,7 @@ targetFrameRate setter behind a branch; Fire Emblem Engage (2020.3.18f1) the sam
 the manager getter; Return of the Obra Dinn (2017.4) registers from code (get_vSyncCount only), its managers-array lookup adding the index before an offset load. Unity 2022.3 (SUPER
 ROBOT WARS Y, Super Monkey Ball Banana Rumble, Monster Train 2) keeps no table and registers no name from code that this reads: nothing is found there.
 Usage on its own: unity_fps.py <module>... (what it finds in each)"""
-import struct, sys, os
+import os, re, struct, sys
 
 TFR, VSYNC = 'UnityEngine.Application::set_targetFrameRate', 'UnityEngine.QualitySettings::get_vSyncCount'
 RET = 0xD65F03C0
@@ -55,7 +57,6 @@ def icall_table(img, rel, ro_off, data_off):
 def icall_code(img, rel, text_end, ro_off, data_off, names):
     """{internal call name: native function offset} for those of names that main registers from code (Unity 2019.4, Pokémon Brilliant Diamond: adrp x1; ldr x1, [x1, #slot], the
     function through a relocated GOT slot, or adrp x1; add x1, the function itself; then adrp x0; add x0, the name; then bl the register call), each registered exactly once"""
-    import re
     w = lambda a: struct.unpack_from('<I', img, a)[0]
     out = {}
     for name in names:
@@ -159,12 +160,67 @@ def vsync_count(img, f, text_end):
         elif (u & 0x0A000000) != 0x08000000 or (u >> 22) & 1: regs.pop(d, None)   # anything else that may write a register (stores and FP loads do not)
     return None
 
+
+_NVN_SET_STORE = re.compile(re.escape(struct.pack('<4I', 0x1e220020, 0x52a84e09, 0x1e270121, 0xb9000101)))
+_NVN_WAIT_READ = struct.pack('<4I', 0xbd4002c0, 0x1e22c000, 0xc8dffea8, 0x9e670101)
+_NVN_WAIT_COMPARE = struct.pack('<3I', 0x1e623821, 0x1e690800, 0x1e602020)  # subtract timestamps, multiply period by 0.9, compare
+
+
+def _adrp_add(page, add, at, reg):
+    if page & 0x9f00001f != 0x90000000 | reg or add & 0xffc003ff != 0x91000000 | reg << 5 | reg:
+        return None
+    return adrp_page(page, at) + ((add >> 10) & 0xfff)
+
+
+def _nvn_wait_reads(img, wait, text_end, period):
+    # The wait loads the period through x22 and the vblank stamp through x21.
+    # The intervening instructions build the 0.9 literal and the SDK wait's arguments.
+    if not 0 < wait < text_end or wait % 4:
+        return False
+    at = img.find(_NVN_WAIT_READ, wait, min(wait + 0x140, text_end))
+    if at < wait + 48 or at % 4 or at + 32 > text_end:
+        return False
+    p = struct.unpack_from('<12I', img, at - 48)
+    return (_adrp_add(p[1], p[2], at - 44, 22) == period and
+            _adrp_add(p[4], p[5], at - 32, 21) is not None and
+            _adrp_add(p[9], p[10], at - 12, 19) is not None and
+            p[8] & 0x9f00001f == 0x90000014 and
+            (p[0], p[3], p[6], p[7], p[11]) == (0xb202e7e8, 0xf29999a8, 0xf2e7fd88, 0x9e670109, 0x1400000c) and
+            struct.unpack_from('<I', img, at + 16)[0] & 0xffc003ff == 0xfd400282 and
+            img[at + 20:at + 32] == _NVN_WAIT_COMPARE)
+
+
+def nvn_vblank(img, rel, text_end, ro_off, data_off):
+    """Find one pair of NVN device timing globals through their setter and waiter."""
+    if img.find(b'GfxDeviceNvn.GPUEndFrameThread\0', ro_off, data_off) < 0:
+        return None
+    matches = set()
+    for m in _NVN_SET_STORE.finditer(img, 28, text_end):
+        at = m.start() - 28
+        if at % 4 or at + 60 > text_end:
+            continue
+        w = struct.unpack_from('<15I', img, at)
+        # cmp/csinc clamps w1 to at least 1. Skip the two stores if the count is unchanged.
+        if (w[0] & 0x9f00001f != 0x90000008 or w[2] & 0xffc003ff != 0xf9400108 or
+                (w[1], *w[3:7]) != (0x7100043f, 0x1a9f8421, 0xb9400109, 0x6b01013f, 0x540001a0) or
+                w[13:] != (0x1e211800, 0xbd000100)):
+            continue
+        count = rel.get(adrp_page(w[0], at) + ((w[2] >> 10) & 0xfff) * 8)
+        period = _adrp_add(w[11], w[12], at + 44, 8)
+        if (count is None or period is None or count == period or
+                any(v % 4 or not data_off <= v <= len(img) - 4 for v in (count, period))):
+            continue
+        # In the reviewed NVN vtables the vblank method precedes SetVSyncCount by 11 slots.
+        if any(fn == at and _nvn_wait_reads(img, rel.get(slot - 0x58, 0), text_end, period)
+               for slot, fn in rel.items() if slot >= data_off + 0x58 and slot % 8 == 0):
+            matches.add((count, period))
+    return matches.pop() if len(matches) == 1 else None
+
+
 def find(img, text_end, ro_off, data_off):
-    """({'target': global offset, 'qs': (global, idx, arr, size, vsync)} with what was found, reason); ({}, why) when main has no table. The reason has '[RED] ' when the table is
-    there but a function's code was not read"""
+    """Return the recognized frame-rate settings and a reason. A known internal call with an unread setter or getter gives a red reason."""
     rel = relocated(img)
     calls = icall_table(img, rel, ro_off, data_off) or icall_code(img, rel, text_end, ro_off, data_off, (TFR, VSYNC))
-    if not calls: return {}, 'no Unity internal-call table'
     out, why = {}, []
     if TFR in calls:
         g = target_fps(img, calls[TFR], text_end)
@@ -174,7 +230,12 @@ def find(img, text_end, ro_off, data_off):
         v = vsync_count(img, calls[VSYNC], text_end)
         if v is not None and v[0] >= data_off: out['qs'] = v; why.append(f'vSyncCount at [[{v[0]:#x}]+{v[2]:#x}] + [[{v[0]:#x}]+{v[1]:#x}] * {v[3]:#x} + {v[4]:#x}')
         else: why.append(f'[RED] vSyncCount getter at {calls[VSYNC]:#x} not read')
-    return out, f'Unity internal calls ({len(calls)}): ' + ', '.join(why)
+    nvn = nvn_vblank(img, rel, text_end, ro_off, data_off)
+    if nvn:
+        out['nvn'] = nvn
+        why.append(f'NVN vblank interval at {nvn[0]:#x}, period at {nvn[1]:#x}')
+    if calls: return out, f'Unity internal calls ({len(calls)}): ' + ', '.join(why)
+    return out, 'Unity ' + why[0] if why else 'no Unity internal-call table'
 
 if __name__ == '__main__':
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -153,16 +153,37 @@ static void check(int which) {
         g_mod[0].fps_target_ptr = 0x6000; g_mod[0].fps_target_field = 0x43c; g_mod[0].fps_target_f32 = 1;
         *(uintptr_t *)(base + 0x6000) = (uintptr_t)object;
         f = (float *)(object + 0x438); f[0] = f[1] = 30;
+    } else if (which >= 41) {
+        sync = (int32_t *)(base + 0x6000);
+        f = (float *)(base + 0x6010);
+        g_mod[0].unity_nvn_count = 0x6000;
+        if (which != 45) g_mod[0].unity_nvn_period = 0x6010;
+        if (which == 42 || which == 43) setenv("DM_FPS_TARGET", which == 42 ? "30" : "0", 1);
+        *sync = which == 44 ? 0 : which == 42 ? 1 : 2;
+        *f = *sync / 60.0f;
     } else if (which >= 9) {   // the present interval alone (UE 4.18's nvn.SyncInterval); 12: a main the rewriter found no variable in
         strcpy(g_mod[0].build_id, "0123456789abcdef0123456789abcdef");
         if (which != 12) cvar("nvn.SyncInterval", 0x8adca10);
         *(uintptr_t *)(base + 0x8adca10 + 0x10) = which == 13 ? 0 : (uintptr_t)object;
         sync = (int32_t *)object; sync[0] = sync[1] = which == 10 ? 1 : 2;
     }
-    int engine = which != 3 && which != 12 && which != 37;   // no field found, or a required timing correction missing
+    int engine = which != 3 && which != 12 && which != 37 && which != 45;   // no field found, or a required timing correction missing
     if (which & 1) assert(dm_fps_lock_engine() == engine);   // the graphics layer's present cap may ask before the first present (the acquire)
     dm_fps_lock_tick();
     assert(dm_fps_lock_engine() == engine);
+    if (which >= 41) {
+        int32_t want = which == 41 ? 1 : which == 44 ? 0 : 2;
+        int expected_writes = which == 41 || which == 42 ? 2 : 0;
+        assert(*sync == want && *f == want / 60.0f && writes == expected_writes);
+        dm_fps_lock_tick();
+        assert(writes == expected_writes);
+        if (which == 41) {
+            *sync = 2; *f = 2 / 60.0f;
+            dm_fps_lock_tick();
+            assert(*sync == want && *f == want / 60.0f && writes == 4);
+        }
+        munmap(base, len); return;
+    }
     if (which == 40) {
         assert(f[0] == 30 && f[1] == 60 && writes == 1);   // MaxFps changes, BaseFps remains the engine's time unit.
         dm_fps_lock_tick(); assert(writes == 1);
@@ -274,7 +295,7 @@ static void check(int which) {
 
 int main(void) {
     // Each process starts the production one-time initialization with a fresh build and target.
-    for (int i = 0; i < 41; i++) {
+    for (int i = 0; i < 46; i++) {
         pid_t p = fork(); assert(p >= 0);
         if (!p) { check(i); _exit(0); }
         int status; assert(waitpid(p, &status, 0) == p); assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
