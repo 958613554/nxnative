@@ -235,6 +235,7 @@ One row per profile; the notes are each profile's `README.md`. Entries marked pr
 | [Princess Peach: Showtime!](01007A3009184000/README.md) | `01007A3009184000` | 1.0.0 | 15.3.2 | Unreal Engine 4.27 (Good-Feel), Wwise | NVN | 60 fps target |
 | [Raging Loop](010020400E1C2000/README.md) | `010020400E1C2000` | 1.0.0 (base) | 7.3.2 | Unity 2018.3.10f1 IL2CPP | NVN | — |
 | [Rayman Legends: Definitive Edition](01005FF002E2A000/README.md) | `01005FF002E2A000` | 1.2 | 1.3.1 | Ubisoft's UbiArt Framework | NVN | — |
+| [Re:ZERO -Starting Life in Another World- The Prophecy of the Throne](01000B20117B8000/README.md) | `01000B20117B8000` | 1.0.0 (base) | 9.5.0 | The Forge renderer | Vulkan | — |
 | [Re:ZERO -Starting Life in Another World- The Prophecy of the Throne](0100D800117F4000/README.md) | `0100D800117F4000` | 1.0.2 | 9.5.0 | The Forge renderer | Vulkan | — |
 | [Red Dead Redemption](01007820196A6000/README.md) | `01007820196A6000` | 1.0.7 | 15.3.2 | Rockstar's RAGE (Double Eleven port) | NVN | 60 fps target |
 | [Resident Evil](010050F00BC1A000/README.md) | `010050F00BC1A000` | 1.0.0 (base) | 5.4.0 | Capcom's MT Framework | NVN | — |
