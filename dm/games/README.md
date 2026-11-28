@@ -184,6 +184,7 @@ One row per profile; the notes are each profile's `README.md`. Entries marked pr
 | [Monster Train 2](010051701FB46000/README.md) | `010051701FB46000` | 1.1.1 | 18.3.5 | Unity 2022.3.54f1 IL2CPP | NVN | [60 fps mode](010051701FB46000/README.md#frame-rate) |
 | [Mortal Kombat 11](0100F2200C984000/README.md) | `0100F2200C984000` | 1.0.26 | 9.3.1 | NetherRealm's Unreal Engine 3, Wwise, Havok | NVN | — |
 | [NARUTO SHIPPUDEN: Ultimate Ninja STORM 3 Full Burst](01006BB00800A000/README.md) | `01006BB00800A000` | 1.0.1 | 4.4.0 | CyberConnect2, CRIWARE | NVN | [60 fps in Mac VS Battle](01006BB00800A000/README.md#frame-rate) |
+| [NARUTO SHIPPUDEN: ULTIMATE NINJA STORM 4 ROAD TO BORUTO](01003F800CF5C000/README.md) | `01003F800CF5C000` | 1.1.0 | 8.2.1 | CyberConnect2, CRIWARE | NVN + OpenGL ES | — |
 | [NARUTO X BORUTO Ultimate Ninja STORM CONNECTIONS](0100D2D0190A4000/README.md) | `0100D2D0190A4000` | 1.7.1 | 14.3.0 | CyberConnect2, CRIWARE | NVN + OpenGL ES | [60 fps target](0100D2D0190A4000/README.md#frame-rate) |
 | [Need for Speed: Hot Pursuit Remastered](010029B0118E8000/README.md) | `010029B0118E8000` | 1.0.3 | 10.4.1 | Criterion's engine (Stellar Entertainment port) | NVN | 60 fps target |
 | [NieR:Automata The End of YoRHa Edition](010056B015FE8000/README.md) | `010056B015FE8000` | 1.0.3 | 12.3.9 | PlatinumGames' engine | NVN | 60 fps target |
