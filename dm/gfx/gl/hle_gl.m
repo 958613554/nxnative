@@ -190,7 +190,12 @@ enum {
     GL_OBJECT_TYPE = 0x9112, GL_SYNC_CONDITION, GL_SYNC_STATUS, GL_SYNC_FLAGS, GL_SYNC_FENCE, GL_SYNC_GPU_COMMANDS_COMPLETE, GL_UNSIGNALED, GL_SIGNALED,
     GL_ALREADY_SIGNALED, GL_TIMEOUT_EXPIRED, GL_CONDITION_SATISFIED, GL_CONTEXT_PROFILE_MASK = 0x9126,
 };
+#define GL_MAP_READ_BIT 0x1
+#define GL_MAP_WRITE_BIT 0x2
+#define GL_MAP_INVALIDATE_RANGE_BIT 0x4
 #define GL_MAP_INVALIDATE_BUFFER_BIT 0x8
+#define GL_MAP_UNSYNCHRONIZED_BIT 0x20
+#define GL_MAP_PERSISTENT_BIT 0x40
 #define GL_SYNC_FLUSH_COMMANDS_BIT 0x1
 #define GL_COLOR_BUFFER_BIT 0x4000
 #define GL_DEPTH_BUFFER_BIT 0x100
@@ -2251,14 +2256,32 @@ GLB(glBufferSubData, void, GLenum target, GLintptr off, GLsizeiptr size, const v
     }
     if (size) memcpy((uint8_t *)b->mb.contents + off, data, size);
 }
-// The mapping is the MTLBuffer's own memory: a persistent or unsynchronized mapping is the game's to fence; invalidating a whole buffer in flight orphans it, as glBufferData does
+static int sync_wait(id<MTLSharedEvent> event, uint64_t serial, uint64_t timeout_ns);
+static uint64_t g_map_wait_ns = 10000000000ull;   // 10 s cap on synchronized glMapBufferRange GPU waits
+// The mapping is the MTLBuffer's own memory: a persistent or unsynchronized mapping is the game's to fence; invalidating a whole mutable buffer in flight orphans it, as glBufferData does;
+// an ordinary synchronized write map submits the recording command buffer when needed and waits for the buffer's last-use serial before returning writable memory.
 GLB(glMapBufferRange, void *, GLenum target, GLintptr off, GLsizeiptr len, GLbitfield access) {
     buf_t *b = bound_buf(target);
     if (!b || !b->mb || off < 0 || len <= 0 || (size_t)(off + len) > b->size) { RED1("glMapBufferRange(%#x, %ld, %ld) outside the bound buffer", target, (long)off, (long)len); return NULL; }
-    if (b->use > atomic_load(&g_done) && !b->immutable && (access & GL_MAP_INVALIDATE_BUFFER_BIT)) {
-        @autoreleasepool { b->mb = [g_dev newBufferWithLength:b->mb.length options:MTLResourceStorageModeShared]; } b->use = 0;
-    } else if (b->use > atomic_load(&g_done) && !(access & (0x40 /* PERSISTENT */ | 0x20 /* UNSYNCHRONIZED */)))
-        RED1("glMapBufferRange of a buffer the GPU may still read: not waited for");
+    if (b->use > atomic_load(&g_done) && (access & GL_MAP_WRITE_BIT)) {
+        if (!b->immutable && (access & GL_MAP_INVALIDATE_BUFFER_BIT) && !(access & GL_MAP_READ_BIT)) {
+            @autoreleasepool { b->mb = [g_dev newBufferWithLength:b->mb.length options:MTLResourceStorageModeShared]; }
+            b->use = 0;
+        } else if (!(access & (GL_MAP_PERSISTENT_BIT | GL_MAP_UNSYNCHRONIZED_BIT))) {
+            uint64_t serial = b->use;
+            if (serial >= g_serial) {
+                dm_gfx_enter();
+                if (g_cb) cb_commit();
+                dm_gfx_leave();
+            }
+            if (!sync_wait(g_ev, serial, g_map_wait_ns)) {
+                RED1("glMapBufferRange(%#x, %ld, %ld) timed out waiting for GPU serial %llu", target, (long)off, (long)len, (unsigned long long)serial);
+                gl_error(GL_OUT_OF_MEMORY);
+                return NULL;
+            }
+            b->use = 0;
+        }
+    }
     return (uint8_t *)b->mb.contents + off;
 }
 GL(glUnmapBuffer, uint32_t, GLenum target) { (void)target; return 1; }

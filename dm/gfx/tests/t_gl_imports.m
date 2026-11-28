@@ -1494,6 +1494,86 @@ static void test_fixed_function(int gpu) {
         h_glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         assert(!memcmp(pixels, blue, sizeof blue));
 
+        // Synchronized glMapBufferRange write maps must order after pending draws (unsubmitted and submitted),
+        // while invalidating mutable buffers still orphans and unsynchronized/persistent maps do not submit or stall.
+        {
+            const uint8_t v_red[12] = {255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255};
+            const uint8_t v_blue[12] = {0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255};
+            GLuint vbo;
+            h_glDisable(GL_TEXTURE_2D);
+            h_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[0], 0);
+            h_glGenBuffers(1, &vbo);
+            h_glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            h_glColorPointer(4, GL_UNSIGNED_BYTE, 0, NULL);
+
+            // (1) Unsubmitted draw + ordinary synchronized write map
+            h_glBufferData(GL_ARRAY_BUFFER, sizeof v_red, v_red, 0x88E8 /* GL_STREAM_DRAW */);
+            h_glClearColor(0, 0, 0, 1); h_glClear(GL_COLOR_BUFFER_BIT);
+            h_glViewport(0, 0, 1, 1); h_glDrawArrays(GL_TRIANGLES, 0, 3);
+            void *wr = h_glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof v_blue, GL_MAP_WRITE_BIT);
+            assert(wr);
+            memcpy(wr, v_blue, sizeof v_blue);
+            assert(h_glUnmapBuffer(GL_ARRAY_BUFFER) == 1);
+            h_glViewport(1, 0, 1, 1); h_glDrawArrays(GL_TRIANGLES, 0, 3);
+            h_glReadPixels(0, 0, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            assert(pixels[0] == 255 && pixels[1] == 0 && pixels[2] == 0 && pixels[3] == 255);
+            assert(pixels[4] == 0 && pixels[5] == 0 && pixels[6] == 255 && pixels[7] == 255);
+
+            // (2) Already-submitted draw (glFlush) + ordinary synchronized write map
+            h_glBufferData(GL_ARRAY_BUFFER, sizeof v_red, v_red, 0x88E8);
+            h_glClearColor(0, 0, 0, 1); h_glClear(GL_COLOR_BUFFER_BIT);
+            h_glViewport(0, 0, 1, 1); h_glDrawArrays(GL_TRIANGLES, 0, 3);
+            h_glFlush();
+            wr = h_glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof v_blue, GL_MAP_WRITE_BIT);
+            assert(wr);
+            memcpy(wr, v_blue, sizeof v_blue);
+            assert(h_glUnmapBuffer(GL_ARRAY_BUFFER) == 1);
+            h_glViewport(1, 0, 1, 1); h_glDrawArrays(GL_TRIANGLES, 0, 3);
+            h_glReadPixels(0, 0, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            assert(pixels[0] == 255 && pixels[1] == 0 && pixels[2] == 0 && pixels[3] == 255);
+            assert(pixels[4] == 0 && pixels[5] == 0 && pixels[6] == 255 && pixels[7] == 255);
+
+            // (3) Mutable whole-buffer invalidation orphans without submitting and preserves both draws
+            h_glBufferData(GL_ARRAY_BUFFER, sizeof v_red, v_red, 0x88E8);
+            h_glClearColor(0, 0, 0, 1); h_glClear(GL_COLOR_BUFFER_BIT);
+            h_glViewport(0, 0, 1, 1); h_glDrawArrays(GL_TRIANGLES, 0, 3);
+            uint64_t serial_before = g_serial;
+            void *old_contents = buf_of(vbo)->mb.contents;
+            wr = h_glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof v_blue, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+            assert(wr && g_serial == serial_before && wr != old_contents);
+            memcpy(wr, v_blue, sizeof v_blue);
+            assert(h_glUnmapBuffer(GL_ARRAY_BUFFER) == 1);
+            h_glViewport(1, 0, 1, 1); h_glDrawArrays(GL_TRIANGLES, 0, 3);
+            h_glReadPixels(0, 0, 2, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            assert(pixels[0] == 255 && pixels[1] == 0 && pixels[2] == 0 && pixels[3] == 255);
+            assert(pixels[4] == 0 && pixels[5] == 0 && pixels[6] == 255 && pixels[7] == 255);
+
+            // (4) Unsynchronized and persistent maps do not commit or orphan
+            h_glBufferData(GL_ARRAY_BUFFER, sizeof v_red, v_red, 0x88E8);
+            h_glViewport(0, 0, 1, 1); h_glDrawArrays(GL_TRIANGLES, 0, 3);
+            serial_before = g_serial;
+            old_contents = buf_of(vbo)->mb.contents;
+            wr = h_glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof v_red, GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+            assert(wr == old_contents && g_serial == serial_before);
+            assert(h_glUnmapBuffer(GL_ARRAY_BUFFER) == 1);
+            wr = h_glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof v_red, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT);
+            assert(wr == old_contents && g_serial == serial_before);
+            assert(h_glUnmapBuffer(GL_ARRAY_BUFFER) == 1);
+            h_glFinish();
+
+            // (5) Timed-out GPU wait refuses to expose writable backing memory
+            uint64_t saved_wait = g_map_wait_ns;
+            g_map_wait_ns = 1000000ull;   // 1 ms
+            buf_of(vbo)->use = g_serial + 100;
+            wr = h_glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof v_red, GL_MAP_WRITE_BIT);
+            assert(wr == NULL && h_glGetError() == GL_OUT_OF_MEMORY);
+            buf_of(vbo)->use = 0;
+            g_map_wait_ns = saved_wait;
+
+            h_glBindBuffer(GL_ARRAY_BUFFER, 0);
+            h_glDeleteBuffers(1, &vbo);
+        }
+
         h_glDeleteVertexArrays(1, &vao); h_glDeleteFramebuffers(1, &fb); h_glDeleteTextures(2, tex);
     }
     assert(h_glGetError() == GL_NO_ERROR);
