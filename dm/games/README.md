@@ -67,6 +67,7 @@ One row per profile; the notes are each profile's `README.md`. Entries marked pr
 | [BALL x PIT](010086A022444000/README.md) | `010086A022444000` | 1.293 | 20.5.19 | Unity 6000.0.62f1 IL2CPP | NVN | — |
 | [Balatro](0100CD801CE5E000/README.md) | `0100CD801CE5E000` | 1.1.3 | 18.3.2 | LÖVE 11.4 (love-nx, LuaJIT, SDL) | OpenGL | — |
 | [Bastion](010038600B27E000/README.md) | `010038600B27E000` | 1.0.0 (base) | 5.4.0 | Supergiant Games' engine on MonoGame 3.0 | NVN | — |
+| [Baten Kaitos I & II HD Remaster](0100C07018CA6000/README.md) | `0100C07018CA6000` | 1.0.3 | 16.2.0 | Unity 2021.3.27f1 IL2CPP (launcher, [Baten Kaitos I](0100C07018CA6001/README.md), [Baten Kaitos II](0100C07018CA6002/README.md)) | NVN | — |
 | [Batman: Arkham Asylum](0100E870163CA000/README.md) | `0100E870163CA000` | 1.0.1 (provisional Mac profile) | 14.3.0 | Unreal Engine 3 (Rocksteady), FMOD, Scaleform, Bink | NVN | — |
 | [Batman: Arkham Knight](0100ACD0163D0000/README.md) | `0100ACD0163D0000` | 1.0.5 | 14.3.0 | Unreal Engine 3 (Rocksteady), Wwise | NVN | — |
 | [Bayonetta](010076F0049A2000/README.md) | `010076F0049A2000` | 1.1 | 3.6.0 | PlatinumGames' engine (Wii U form) | NVN | — |
