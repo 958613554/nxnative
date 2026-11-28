@@ -19,10 +19,11 @@ The 20.5 GB Mac app passed deep signature verification. The packaged host render
 
 The merged RomFS holds 11 paks and 12 Unreal IoStore containers with version 6 tables and Oodle-compressed blocks. `pakchunk0-Switch.pak` holds `GlobalShaderCache-SP_GLSL_SWITCH.bin`. Material shaders are stored inline in the cooked packages in the export bundles. The split found 124,855 unique shaders, including 16,280 vertex, 98,061 pixel and 10,510 compute shaders and four geometry shaders. The Mac build produced a library for every key.
 
-The translator reports nine buffer-texture reads replaced with zero in three aura vertex shaders (`4d968de65df61283`, `58aa1feb8d7b5c7f`, `9d68a12ad09a7160`). The opening route requested 446 other keys. The visual impact on the scenes using those effects remains open.
+The opening route did not request the three aura vertex shaders (`4d968de65df61283`, `58aa1feb8d7b5c7f`, `9d68a12ad09a7160`). The fixed translator restores all nine omitted buffer-texture fetches. All three compiled for macOS and iOS with Xcode 27.2 in a targeted shader build. Their effects in gameplay remain unverified.
 
 ## Found on this game
 
 - [Content-only Unreal paks trigger shared shader preparation](../../../docs/reference/shaders.md#content-only-unreal-paks-trigger-shared-shader-preparation). Three asset paks blocked the packer before its inline scan.
 - [Texture slots picked at run time](../../../docs/reference/shaders.md#texture-slots-picked-at-run-time) covers the vertex shaders that select buffer textures through c2.
+- [Bindless reads whose handle phi also carries other values](../../../docs/reference/shaders.md#bindless-reads-whose-handle-phi-also-carries-other-values) covers the aura shaders' resolved c1 jump-table case.
 - The older 1.70 update exposed [system register accesses through x18](../../../docs/reference/rewriter.md#system-register-accesses-through-x18). The reported `mrs x18, tpidr_el0` is absent from the 2.01 `main`.
