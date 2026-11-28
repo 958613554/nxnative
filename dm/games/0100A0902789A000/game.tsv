@@ -1,0 +1,41 @@
+# Game profile of SpongeBob SquarePants: Titans of the Tide (Switch, 1.4.0 from a merged 1G+1U cartridge). Plays on iPhone 16 Pro
+# Format: see dm/games/README.md
+# Unreal Engine 5.x (IoStore archives) on NVN, SDK 20.5.6. Modules main + subsdk0 + sdk.
+
+# ---- Identity ----
+title_id	0100A0902789A000
+program_id	0100A0902789A000
+
+# ---- App ----
+name	SpongeBob SquarePants: Titans of the Tide
+ipa	SpongeBobSquarePantsTitansOfTheTide.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.4.0	main=0c8e5002675f7f2c169452f61972aac6	subsdk0=3308c1d216f788397d1451c8345a16cd	sdk=5cf080e800530a7f25bd528ec875c27b
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Ghost/Content/Paks/Ghost-Switch.ucas
+zip_store	.bank:.bk2:.pak:.ttf:.txt:.ucas:.utoc:.metallib
+
+# ---- Memory ----
+# Unreal Engine 5: nninitStartup reserves a 62 GB engine address region and FMallocBinned3 takes 37 GB of it.
+# The rewriter's engine-wide gates (dm/tools/ue_malloc.py and dm/tools/ue_region.py) replace FMallocBinned3 with
+# the host allocator and size the engine region to what the alias region has room for; stdalloc_cap caps the SDK's
+# StandardAllocator region at 2 GB so both fit inside the 6 GB alias region on iOS.
+mem_reserve	0x200000000
+mem_alias	0x180000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 20 MB of system resource
+sys_resource	0x1400000
+stdalloc_cap	0x80000000
+
+# ---- Shader split ----
+# the decoded shader code archives: the engine's global shaders and the game's material shaders
+shader_groups	ShaderArchive-Global-=global ShaderArchive-=game
+shader_note	SpongeBob SquarePants: Titans of the Tide shaders (IoStore global + game archives in main)
