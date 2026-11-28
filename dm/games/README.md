@@ -57,6 +57,7 @@ One row per profile; the notes are each profile's `README.md`. Entries marked pr
 | [Alien: Isolation](010075D00E8BA000/README.md) | `010075D00E8BA000` | 1.1.5_64113 | 8.2.0 | Creative Assembly's Cathode, Havok, Wwise | NVN | [60 fps target](010075D00E8BA000/README.md#frame-rate) |
 | [ANIMAL WELL](010020D01AD24000/README.md) | `010020D01AD24000` | 1.0.10 | 20.5.7 | its own (not named) | NVN | — |
 | [Animal Crossing: New Horizons](01006F8002326000/README.md) | `01006F8002326000` | 3.0.3 | 20.5.4 | Nintendo EPD (sead / agl / gsys) | NVN | — |
+| [Aokana - Four Rhythms Across the Blue](0100990011866000/README.md) | `0100990011866000` | 1.01 | 9.4.1 | Unity 2018.4.22f1 IL2CPP, FMOD | NVN | — |
 | [Apollo Justice: Ace Attorney Trilogy](010020D01B890000/README.md) | `010020D01B890000` | 1.0.1 | 15.3.2 | Capcom's RE Engine, Havok, Wwise | NVN | [60 fps target](010020D01B890000/README.md#frame-rate) |
 | [Assassin's Creed III Remastered](01007F600B134000/README.md) | `01007F600B134000` | 1.0.0 (provisional Mac profile) | 5.4.0 | Ubisoft Scimitar / Anvil | NVN | — |
 | [Atelier Ryza 2: Lost Legends & the Secret Fairy](01009A9012022000/README.md) | `01009A9012022000` | 1.0.7 | 9.6.0 | Gust's engine on Koei Tecmo's KTGL | NVN | — |
